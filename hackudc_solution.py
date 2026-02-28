@@ -94,18 +94,41 @@ DOWNLOAD_WORKERS = 32   # parallel download threads
 IMG_SIZE         = 224  # FashionCLIP canonical input size
 DOWNLOAD_TIMEOUT = 20   # seconds per request (increased)
 DOWNLOAD_RETRIES = 3    # per-image retry attempts with backoff
-K_PER_SEGMENT    = 200  # candidates per segment (base, scaled dynamically)
-AGGREGATION      = "sum" # score aggregation (sum rewards multi-segment hits)
+K_PER_SEGMENT    = 400  # candidates per segment (↑ from 200 — wider pool)
+AGGREGATION      = "sum" # Z-score + sum (reverted from RRF — preserves similarity magnitude)
 # Text re-ranking: coarse category labels ("TROUSERS") still give CLIP signal.
 ENABLE_TEXT_RERANK  = True
 TEXT_RERANK_ALPHA   = 0.10  # low text weight — descriptions are coarse labels
-TEXT_RERANK_TOP_N   = 60    # re-rank window (narrower = less noise)
+TEXT_RERANK_TOP_N   = 100   # re-rank window (↑ from 60 — wider = more recall)
 # Adaptive routing: segmented is always better; use it for all bundles
 SEG_MIN_CROPS       = 1    # <1 crops → fall back to baseline whole-image query
 # Whole-image embedding weight when combined with segment scores
 WHOLE_IMG_WEIGHT    = 0.3  # additive bonus for the full-scene context
 # TTA: number of augmented views to average for query embedding
-TTA_N_VIEWS         = 2    # 1 = disabled, 2-3 = mild, adds ~2× query time
+TTA_N_VIEWS         = 3    # 1 = disabled, 2-3 = mild (↑ from 2 — adds centre crop view)
+# Text-visual ensemble: DISABLED — coarse labels add noise
+ENABLE_TEXT_ENSEMBLE = False
+# Section boost: DISABLED — product_section_map is built from train_df, causing leakage
+ENABLE_SECTION_BOOST = False
+# ── Segment weighting (Phase 3) ──────────────────────────────────────────────
+# Weights based on training GT frequency (upper/lower body dominate).
+SEGMENT_WEIGHTS = {
+    "upper_body": 1.2,
+    "lower_body": 1.2,
+    "dress":      1.0,
+    "shoes":      0.9,
+    "bag":        0.7,
+    "hat":        0.6,
+    "scarf_belt": 0.5,
+}
+# Cross-segment intersection bonus: products in ≥2 segments get a boost
+CROSS_SEG_BONUS     = 0.5
+# ── Pseudo-Relevance Feedback (Phase 4) ──────────────────────────────────────
+ENABLE_PRF          = True
+PRF_TOP_K           = 3    # top products to use as expanded queries per segment
+PRF_WEIGHT          = 0.4  # weight of PRF-expanded query vs original
+# ── Soft category filtering (Phase 5) ────────────────────────────────────────
+SOFT_CATEGORY_PENALTY = 0.3  # multiply score by this for out-of-category products
 
 # HTTP headers to avoid CDN bot-blocks
 DOWNLOAD_HEADERS = {
@@ -161,10 +184,32 @@ if "product_description" in products_df.columns:
 test_bundle_ids = test_df["bundle_asset_id"].dropna().unique().tolist()
 print(f"\nTest bundle IDs: {len(test_bundle_ids)}")
 
+# Section maps: map bundles and products to editorial section IDs
+bundle_section_map: dict[str, int] = {}
+product_section_map: dict[str, int] = {}
+if "bundle_id_section" in bundles_df.columns:
+    bundle_section_map = {
+        row.bundle_asset_id: int(row.bundle_id_section)
+        for row in bundles_df.itertuples()
+        if pd.notna(row.bundle_id_section)
+    }
+    merged_sec = train_df.merge(
+        bundles_df[["bundle_asset_id", "bundle_id_section"]],
+        on="bundle_asset_id",
+        how="left",
+    )
+    for row in merged_sec.itertuples():
+        if pd.notna(row.bundle_id_section) and row.product_asset_id not in product_section_map:
+            product_section_map[row.product_asset_id] = int(row.bundle_id_section)
+    print(f"Section maps built: {len(bundle_section_map):,} bundles, {len(product_section_map):,} products")
+
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 4: Image Download + Preview
 
 # %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T11:55:36.310456Z","iopub.execute_input":"2026-02-28T11:55:36.310659Z","iopub.status.idle":"2026-02-28T11:55:48.430134Z","shell.execute_reply.started":"2026-02-28T11:55:36.310641Z","shell.execute_reply":"2026-02-28T11:55:48.429463Z"}}
+_PERMANENT_ERRORS = {403, 404, 410}  # HTTP status codes that won't recover on retry
+
+
 def download_image(
     asset_id: str,
     url: str,
@@ -172,18 +217,33 @@ def download_image(
     timeout: int = DOWNLOAD_TIMEOUT,
     retries: int = DOWNLOAD_RETRIES,
 ) -> bool:
-    """Download image with retries + exponential backoff. Returns True on success."""
+    """Download image with retries + exponential backoff + PIL verify. Returns True on success."""
+    import tempfile
     out_path = out_dir / f"{asset_id}.jpg"
     if out_path.exists():
         return True
     for attempt in range(retries):
         try:
             r = requests.get(url, timeout=timeout, headers=DOWNLOAD_HEADERS)
+            if r.status_code in _PERMANENT_ERRORS:
+                return False  # no point retrying
             r.raise_for_status()
-            # Validate that response is a non-empty image
             if len(r.content) < 500:
-                raise ValueError(f"Response too small ({len(r.content)} bytes), likely an error page")
-            out_path.write_bytes(r.content)
+                raise ValueError(f"Response too small ({len(r.content)} bytes)")
+            # Atomic write: write to temp file, verify, then rename
+            tmp_fd, tmp_path = tempfile.mkstemp(dir=out_dir, suffix=".tmp")
+            try:
+                with os.fdopen(tmp_fd, "wb") as fh:
+                    fh.write(r.content)
+                with Image.open(tmp_path) as img:
+                    img.verify()  # raises if file is corrupt/truncated
+                os.rename(tmp_path, out_path)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
             return True
         except Exception:
             if attempt < retries - 1:
@@ -553,7 +613,7 @@ else:
 # Reverse lookup
 idx_to_pid: dict[int, str] = {i: pid for i, pid in enumerate(indexed_product_ids)}
 
-# Build FAISS index
+# Build FAISS index — IndexFlatIP for exact search (100% recall, fits in VRAM at 27K×512)
 DIM = product_embeddings.shape[1]  # 512
 print(f"\nBuilding FAISS IndexFlatIP (dim={DIM}, n={len(indexed_product_ids):,}) …")
 index_cpu = faiss.IndexFlatIP(DIM)
@@ -739,11 +799,24 @@ def segment_image(pil_img: Image.Image) -> np.ndarray:
     return seg_map
 
 
+def _square_pad(img: Image.Image) -> Image.Image:
+    """Pad image to square with white background.
+    Marqo-FashionSigLIP was trained on square product images;
+    padding instead of stretching preserves aspect ratio."""
+    w, h = img.size
+    if w == h:
+        return img
+    side = max(w, h)
+    result = Image.new("RGB", (side, side), (255, 255, 255))
+    result.paste(img, ((side - w) // 2, (side - h) // 2))
+    return result
+
+
 def extract_segment_crops(
     pil_img: Image.Image,
     seg_map: np.ndarray,
-    min_frac: float = 0.05,
-    padding: float = 0.05,
+    min_frac: float = 0.03,
+    padding: float = 0.10,
 ) -> dict[str, Image.Image]:
     """
     For each SEGMENT_GROUP, compute bounding box over union of constituent labels,
@@ -778,7 +851,7 @@ def extract_segment_crops(
 
         crop = pil_img.crop((x_min, y_min, x_max + 1, y_max + 1))
         if crop.width > 5 and crop.height > 5:
-            crops[seg_name] = crop
+            crops[seg_name] = _square_pad(crop)  # square-pad for SigLIP compatibility
 
     return crops
 
@@ -859,7 +932,7 @@ def text_rerank(
     sim = crop_embs @ text_embs.T  # (n_crops, n_text)
     text_scores_ne = sim.max(axis=0)  # (n_text,)
 
-    # Combine with image rank (normalise rank to [0,1])
+    # Image rank signal: linear decay (gentler than reciprocal — doesn't over-penalise ranks 5-15)
     img_rank_score = np.array([1.0 - i / len(candidate_pids) for i in range(len(candidate_pids))])
 
     text_score_full = np.zeros(len(candidate_pids))
@@ -898,19 +971,19 @@ def predict_segmented(
     k: int = TOP_K,
 ) -> dict[str, list[str]]:
     """
-    Improved per-segment retrieval pipeline:
+    Improved per-segment retrieval pipeline (Phases 0-5):
 
-    1.  SegFormer → garment crops
+    1.  SegFormer → garment crops (square-padded, 10% bbox padding, min_frac=3%)
     2.  Adaptive routing: if <SEG_MIN_CROPS crops detected, use TTA whole-image
-        baseline instead (avoids hurting easy 1-2 product bundles).
-    3.  TTA encode each crop (original + flip + slight crop-resize average)
-    4.  FAISS query per segment (top K_dynamic)
-    5.  Category-aware filtering per segment
-    6.  Per-segment L2-score normalisation before aggregation (avoids scale bias)
-    7.  Sum-score aggregation + whole-image embedding bonus (WHOLE_IMG_WEIGHT)
-    8.  Optional text re-ranking (disabled by default — product_description is
-        coarse label, not rich text)
-    9.  Sort descending → top-k
+    3.  TTA encode each crop (original + flip + centre crop)
+    4.  FAISS exact search per segment (IndexFlatIP, K_dynamic candidates)
+    5.  Soft category filtering (0.3× penalty instead of hard exclusion)
+    6.  Per-segment Z-score normalisation + segment weight (frequency-based)
+    7.  Sum aggregation + cross-segment intersection bonus
+    8.  Whole-image embedding bonus (Z-score normalised)
+    9.  Pseudo-Relevance Feedback: re-query with top-3 product embeddings
+    10. Text re-ranking (linear decay)
+    11. Sort descending → top-k
     """
     predictions: dict[str, list[str]] = {}
 
@@ -931,10 +1004,8 @@ def predict_segmented(
             crops = {}
 
         # ── Adaptive routing ────────────────────────────────────────────────
-        # For bundles with <SEG_MIN_CROPS distinct garment crops, segmented
-        # retrieval introduces more noise than signal — route to whole-image.
         if len(crops) < SEG_MIN_CROPS:
-            whole_emb = tta_encode(img)  # (1, D), TTA averaged
+            whole_emb = tta_encode(img)
             scores, indices = index.search(whole_emb, k)
             top_pids = [idx_to_pid[int(i)] for i in indices[0] if int(i) in idx_to_pid]
             predictions[bid] = top_pids[:k]
@@ -945,59 +1016,65 @@ def predict_segmented(
         # ── TTA-encode each crop ─────────────────────────────────────────────
         crop_list  = list(crops.values())
         seg_names  = list(crops.keys())
-        # Stack TTA embeddings: (n_crops, D)
-        embs_norm = np.vstack([tta_encode(c) for c in crop_list])
+        embs_norm = np.vstack([tta_encode(c) for c in crop_list])  # (n_crops, D)
 
         # ── Dynamic K: more crops → larger candidate pool ────────────────────
-        K_dynamic = K_PER_SEGMENT * max(1, len(crops) // 2)
-        # e.g. 2 crops → 150, 4 crops → 300
+        K_dynamic = K_PER_SEGMENT
 
         # ── FAISS query per segment ──────────────────────────────────────────
         scores_map: dict[str, float] = {}  # product_id → accumulated score
+        seg_hit_count: dict[str, int] = {}  # product_id → number of segments it appears in
 
         scores_arr, indices_arr = index.search(embs_norm, K_dynamic)
-        # (n_crops, K_dynamic)
 
         for seg_name, seg_scores, seg_indices in zip(seg_names, scores_arr, indices_arr):
             allowed = SEGMENT_TO_CATEGORIES.get(seg_name, set())
+            seg_weight = SEGMENT_WEIGHTS.get(seg_name, 1.0)
 
-            filtered: list[tuple[str, float]] = []
-            unfiltered: list[tuple[str, float]] = []
-
+            candidates: list[tuple[str, float]] = []
             for sc, idx_val in zip(seg_scores, seg_indices):
                 pid = idx_to_pid.get(int(idx_val))
                 if pid is None:
                     continue
-                unfiltered.append((pid, float(sc)))
+                score = float(sc)
+                # ── Soft category filtering (Phase 5) ────────────────────────
                 desc = product_desc.get(pid, "")
-                if not allowed or _category_match(desc, allowed):
-                    filtered.append((pid, float(sc)))
+                if allowed and not _category_match(desc, allowed):
+                    score *= SOFT_CATEGORY_PENALTY  # reduce but don't exclude
+                candidates.append((pid, score))
 
-            # Fallback: if category filter emptied the results, use unfiltered
-            # with a 50% score penalty to signal lower confidence.
-            if filtered:
-                to_add = filtered
-            else:
-                to_add = [(p, s * 0.50) for p, s in unfiltered[: K_dynamic // 4]]
+            if not candidates:
+                continue
 
             # ── Per-segment Z-score normalisation ───────────────────────────
-            # Different segment types have different typical cosine score ranges;
-            # normalise to zero mean / unit std so no segment dominates the sum.
-            raw_vals = np.array([s for _, s in to_add], dtype=np.float32)
+            raw_vals = np.array([s for _, s in candidates], dtype=np.float32)
             if len(raw_vals) > 1:
                 mu, sigma = raw_vals.mean(), raw_vals.std() + 1e-8
-                to_add = [(p, float((s - mu) / sigma)) for p, s in to_add]
+                candidates = [(p, float((s - mu) / sigma)) for p, s in candidates]
 
-            # ── Sum aggregation (rewards cross-segment hits) ─────────────────
-            for pid, sc in to_add:
-                scores_map[pid] = scores_map.get(pid, 0.0) + sc
+            # ── Confidence weighting (Phase 3) ──────────────────────────────
+            # Weight by mean cosine sim of top-5 to gauge segment quality
+            top5_sims = raw_vals[:5] if len(raw_vals) >= 5 else raw_vals
+            confidence = float(top5_sims.mean()) if len(top5_sims) > 0 else 1.0
+            confidence = max(confidence, 0.1)  # clamp to avoid zeroing out
 
-        # ── Whole-image embedding bonus ──────────────────────────────────────
-        # Fuse a TTA whole-image query result into the score map so that
-        # products matched by the global scene context are never fully excluded.
-        whole_emb = _l2_norm(_encode_images_raw([img]))  # (1, D), single forward pass
+            # ── Weighted sum aggregation ─────────────────────────────────────
+            seen_in_seg = set()
+            for pid, sc in candidates:
+                scores_map[pid] = scores_map.get(pid, 0.0) + sc * seg_weight * confidence
+                if pid not in seen_in_seg:
+                    seg_hit_count[pid] = seg_hit_count.get(pid, 0) + 1
+                    seen_in_seg.add(pid)
+
+        # ── Cross-segment intersection bonus (Phase 3) ──────────────────────
+        for pid, count in seg_hit_count.items():
+            if count >= 2:
+                scores_map[pid] += CROSS_SEG_BONUS * (count - 1)
+
+        # ── Whole-image embedding bonus (Z-score normalised) ─────────────────
+        whole_emb = _l2_norm(_encode_images_raw([img]))  # (1, D)
         w_scores, w_indices = index.search(whole_emb, K_PER_SEGMENT)
-        w_raw = w_scores[0]  # (K_PER_SEGMENT,)
+        w_raw = w_scores[0]
         if len(w_raw) > 1:
             mu_w = w_raw.mean(); sigma_w = w_raw.std() + 1e-8
             w_norm = (w_raw - mu_w) / sigma_w
@@ -1007,6 +1084,35 @@ def predict_segmented(
             pid = idx_to_pid.get(int(idx_val))
             if pid:
                 scores_map[pid] = scores_map.get(pid, 0.0) + WHOLE_IMG_WEIGHT * float(norm_sc)
+
+        # ── Pseudo-Relevance Feedback (Phase 4) ─────────────────────────────
+        if ENABLE_PRF:
+            # For each segment, take top-PRF_TOP_K product embeddings → average → re-query
+            for seg_idx, seg_name in enumerate(seg_names):
+                seg_s = scores_arr[seg_idx]
+                seg_i = indices_arr[seg_idx]
+                # Get top-K product indices from this segment
+                top_prod_indices = [int(idx_val) for idx_val in seg_i[:PRF_TOP_K]
+                                    if int(idx_val) < len(product_embeddings)]
+                if not top_prod_indices:
+                    continue
+                # Average embeddings of top products → "clean product" query
+                prf_emb = product_embeddings[top_prod_indices].mean(axis=0, keepdims=True)
+                prf_emb = _l2_norm(prf_emb)
+                # Re-query FAISS with the expanded embedding
+                prf_scores, prf_indices = index.search(prf_emb, K_PER_SEGMENT // 2)
+                # Z-score normalise PRF results
+                prf_raw = prf_scores[0]
+                if len(prf_raw) > 1:
+                    mu_p = prf_raw.mean(); sigma_p = prf_raw.std() + 1e-8
+                    prf_norm = (prf_raw - mu_p) / sigma_p
+                else:
+                    prf_norm = prf_raw
+                seg_weight = SEGMENT_WEIGHTS.get(seg_name, 1.0)
+                for norm_sc, idx_val in zip(prf_norm, prf_indices[0]):
+                    pid = idx_to_pid.get(int(idx_val))
+                    if pid:
+                        scores_map[pid] = scores_map.get(pid, 0.0) + PRF_WEIGHT * seg_weight * float(norm_sc)
 
         # ── Optional text re-ranking ─────────────────────────────────────────
         ranked_ext = sorted(scores_map.items(), key=lambda x: x[1], reverse=True)

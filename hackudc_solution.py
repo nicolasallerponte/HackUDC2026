@@ -7,14 +7,14 @@
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 1: Setup
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T08:51:49.892409Z","iopub.execute_input":"2026-02-28T08:51:49.893149Z","iopub.status.idle":"2026-02-28T08:51:57.418098Z","shell.execute_reply.started":"2026-02-28T08:51:49.893117Z","shell.execute_reply":"2026-02-28T08:51:57.417460Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:04:49.254018Z","iopub.execute_input":"2026-02-28T10:04:49.254740Z","iopub.status.idle":"2026-02-28T10:04:57.487881Z","shell.execute_reply.started":"2026-02-28T10:04:49.254684Z","shell.execute_reply":"2026-02-28T10:04:57.487304Z"}}
 import subprocess, sys
 
 def _pip(*args):
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", *args])
 
 # fashion-clip and supporting libs
-_pip("fashion-clip", "transformers>=4.35.0", "accelerate", "tqdm", "Pillow", "requests")
+_pip("fashion-clip", "transformers>=4.35.0", "accelerate", "tqdm", "Pillow", "requests", "open_clip_torch")
 
 # faiss: try GPU build first, fall back to CPU
 try:
@@ -28,7 +28,7 @@ except Exception:
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 2: Imports & Configuration
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T08:51:57.419495Z","iopub.execute_input":"2026-02-28T08:51:57.419768Z","iopub.status.idle":"2026-02-28T08:51:57.429153Z","shell.execute_reply.started":"2026-02-28T08:51:57.419734Z","shell.execute_reply":"2026-02-28T08:51:57.428363Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:04:57.489282Z","iopub.execute_input":"2026-02-28T10:04:57.489508Z","iopub.status.idle":"2026-02-28T10:04:57.499500Z","shell.execute_reply.started":"2026-02-28T10:04:57.489489Z","shell.execute_reply":"2026-02-28T10:04:57.498841Z"}}
 import os
 import gc
 import json
@@ -66,8 +66,6 @@ WORK_DIR  = Path("/kaggle/working")
 IMG_DIR   = WORK_DIR / "images"
 PROD_DIR  = IMG_DIR / "products"
 BUND_DIR  = IMG_DIR / "bundles"
-EMB_FILE  = WORK_DIR / "product_embeddings.npy"
-IDS_FILE  = WORK_DIR / "product_ids.json"
 SUBM_FILE = WORK_DIR / "submission.csv"
 
 for d in [PROD_DIR, BUND_DIR]:
@@ -80,19 +78,31 @@ if DEVICE == "cuda":
     print(f"  GPU: {torch.cuda.get_device_name(0)}")
     print(f"  VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
 
+# ── Model selection ───────────────────────────────────────────────────────────
+USE_MARQO      = True
+MARQO_MODEL_ID = "marqo/marqo-fashionSigLIP"
+MODEL_TAG      = "marqo" if USE_MARQO else "fclip"
+EMB_FILE       = WORK_DIR / f"product_embeddings_{MODEL_TAG}.npy"
+IDS_FILE       = WORK_DIR / f"product_ids_{MODEL_TAG}.json"
+
 # ── Hyper-params ─────────────────────────────────────────────────────────────
 TOP_K            = 15
 EMBED_BATCH      = 64
 DOWNLOAD_WORKERS = 16
 IMG_SIZE         = 224   # FashionCLIP canonical input size
 DOWNLOAD_TIMEOUT = 10    # seconds per request
+K_PER_SEGMENT    = 50    # candidates per segment before category filter
+AGGREGATION      = "sum" # score aggregation: "sum" or "max"
+ENABLE_TEXT_RERANK  = True
+TEXT_RERANK_ALPHA   = 0.25
+TEXT_RERANK_TOP_N   = 30
 
 print("\nConfiguration loaded.")
 
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 3: Data Loading
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T08:51:57.429927Z","iopub.execute_input":"2026-02-28T08:51:57.430156Z","iopub.status.idle":"2026-02-28T08:51:57.570195Z","shell.execute_reply.started":"2026-02-28T08:51:57.430138Z","shell.execute_reply":"2026-02-28T08:51:57.569568Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:04:57.500508Z","iopub.execute_input":"2026-02-28T10:04:57.500785Z","iopub.status.idle":"2026-02-28T10:04:57.640323Z","shell.execute_reply.started":"2026-02-28T10:04:57.500755Z","shell.execute_reply":"2026-02-28T10:04:57.639597Z"}}
 bundles_df = pd.read_csv(DATA_DIR / "bundles_dataset.csv")
 products_df = pd.read_csv(DATA_DIR / "product_dataset.csv")
 train_df = pd.read_csv(DATA_DIR / "bundles_product_match_train.csv")
@@ -137,7 +147,7 @@ print(f"\nTest bundle IDs: {len(test_bundle_ids)}")
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 4: Image Download + Preview
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T08:51:57.571599Z","iopub.execute_input":"2026-02-28T08:51:57.571828Z","iopub.status.idle":"2026-02-28T08:53:37.904549Z","shell.execute_reply.started":"2026-02-28T08:51:57.571808Z","shell.execute_reply":"2026-02-28T08:53:37.903864Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:04:57.641150Z","iopub.execute_input":"2026-02-28T10:04:57.641352Z","iopub.status.idle":"2026-02-28T10:06:10.901561Z","shell.execute_reply.started":"2026-02-28T10:04:57.641333Z","shell.execute_reply":"2026-02-28T10:06:10.900857Z"}}
 def download_image(asset_id: str, url: str, out_dir: Path, timeout: int = DOWNLOAD_TIMEOUT) -> bool:
     """Download image if not already cached. Returns True on success."""
     out_path = out_dir / f"{asset_id}.jpg"
@@ -221,7 +231,7 @@ show_images(valid_bundle_ids[:5],   BUND_DIR, title="Bundle Sample")
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 5: FashionCLIP Loading
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T09:18:27.558230Z","iopub.execute_input":"2026-02-28T09:18:27.558509Z","iopub.status.idle":"2026-02-28T09:18:29.445012Z","shell.execute_reply.started":"2026-02-28T09:18:27.558484Z","shell.execute_reply":"2026-02-28T09:18:29.444299Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:08:35.322487Z","iopub.execute_input":"2026-02-28T10:08:35.323027Z","iopub.status.idle":"2026-02-28T10:08:42.897941Z","shell.execute_reply.started":"2026-02-28T10:08:35.322997Z","shell.execute_reply":"2026-02-28T10:08:42.897223Z"}}
 from fashion_clip.fashion_clip import FashionCLIP  # noqa: E402
 import fashion_clip.fashion_clip as _fc_module      # noqa: E402
 
@@ -317,10 +327,80 @@ def _l2_norm(arr: np.ndarray) -> np.ndarray:
     norms = np.linalg.norm(arr, axis=1, keepdims=True).clip(min=1e-8)
     return arr / norms
 
+
+# ── Marqo-FashionSigLIP via open_clip (recommended loader) ───────────────────
+import open_clip  # noqa: E402
+
+if USE_MARQO:
+    print(f"Loading Marqo-FashionSigLIP via open_clip (hf-hub:{MARQO_MODEL_ID}) …")
+    marqo_model, _, marqo_preprocess = open_clip.create_model_and_transforms(
+        f"hf-hub:{MARQO_MODEL_ID}"
+    )
+    marqo_tokenizer = open_clip.get_tokenizer(f"hf-hub:{MARQO_MODEL_ID}")
+    marqo_model.to(DEVICE).eval()
+    print("Marqo-FashionSigLIP loaded.")
+
+    # Free FashionCLIP VRAM
+    del fclip
+    if DEVICE == "cuda":
+        torch.cuda.empty_cache()
+    print("FashionCLIP unloaded to free VRAM.")
+
+
+def _marqo_encode_images_raw(imgs: list) -> np.ndarray:
+    """Encode PIL images with Marqo-FashionSigLIP. Returns (N, 512) float32."""
+    tensors = torch.stack([marqo_preprocess(img) for img in imgs]).to(DEVICE)
+    with torch.no_grad():
+        out = marqo_model.encode_image(tensors)
+    return out.cpu().float().numpy()
+
+
+def _marqo_encode_texts_raw(texts: list[str]) -> np.ndarray:
+    """Encode text strings with Marqo-FashionSigLIP. Returns (N, 512) float32."""
+    tokens = marqo_tokenizer(texts).to(DEVICE)
+    with torch.no_grad():
+        out = marqo_model.encode_text(tokens)
+    return out.cpu().float().numpy()
+
+
+def _encode_images_raw(imgs: list) -> np.ndarray:
+    """Unified image encoder: Marqo or FashionCLIP depending on USE_MARQO."""
+    return _marqo_encode_images_raw(imgs) if USE_MARQO else _clip_encode_images_raw(imgs)
+
+
+def _encode_texts_raw(texts: list[str]) -> np.ndarray:
+    """Unified text encoder: Marqo or FashionCLIP depending on USE_MARQO."""
+    return _marqo_encode_texts_raw(texts) if USE_MARQO else _clip_encode_texts_raw(texts)
+
+
+def _embed_images(image_paths: list, batch_size: int = EMBED_BATCH) -> np.ndarray:
+    """
+    Embed a list of image paths with the active model (Marqo or FashionCLIP).
+    Returns float32 (N, 512) L2-normalised embeddings.
+    """
+    all_embs: list[np.ndarray] = []
+    for i in tqdm(range(0, len(image_paths), batch_size), desc="Embedding", leave=False):
+        batch_paths = image_paths[i : i + batch_size]
+        imgs: list = []
+        for p in batch_paths:
+            try:
+                imgs.append(Image.open(p).convert("RGB"))
+            except Exception:
+                imgs.append(Image.new("RGB", (IMG_SIZE, IMG_SIZE)))
+        embs = _l2_norm(_encode_images_raw(imgs))
+        all_embs.append(embs)
+        if DEVICE == "cuda":
+            torch.cuda.empty_cache()
+    return np.concatenate(all_embs, axis=0)
+
+
+print("Unified encode helpers ready.")
+
+
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 6: Product Embeddings + FAISS Index
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T09:18:35.650085Z","iopub.execute_input":"2026-02-28T09:18:35.650698Z","iopub.status.idle":"2026-02-28T09:18:35.741081Z","shell.execute_reply.started":"2026-02-28T09:18:35.650673Z","shell.execute_reply":"2026-02-28T09:18:35.740514Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:08:46.502118Z","iopub.execute_input":"2026-02-28T10:08:46.502417Z","iopub.status.idle":"2026-02-28T10:34:30.837583Z","shell.execute_reply.started":"2026-02-28T10:08:46.502393Z","shell.execute_reply":"2026-02-28T10:34:30.836876Z"}}
 def _ensure_valid_sets():
     """Rebuild valid_product/bundle sets from disk if empty (survives kernel restarts)."""
     global valid_product_set, valid_product_ids, valid_bundle_set, valid_bundle_ids
@@ -349,7 +429,7 @@ else:
     # Only embed products we actually downloaded
     ordered_ids  = [pid for pid in valid_product_ids if pid in valid_product_set]
     ordered_paths = [PROD_DIR / f"{pid}.jpg" for pid in ordered_ids]
-    product_embeddings = embed_images_fashionclip(ordered_paths, batch_size=EMBED_BATCH)
+    product_embeddings = _embed_images(ordered_paths, batch_size=EMBED_BATCH)
     indexed_product_ids = ordered_ids
     np.save(EMB_FILE, product_embeddings)
     with open(IDS_FILE, "w") as f:
@@ -390,83 +470,34 @@ if index.ntotal < 1_000:
 elif index.ntotal < 20_000:
     print(f"  [WARN] Only {index.ntotal:,} products indexed (expected ~27K). "
           "Some downloads may have failed — results may be degraded.")
-
 
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 7: Baseline Pipeline (whole-image retrieval)
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T09:18:43.344635Z","iopub.execute_input":"2026-02-28T09:18:43.345222Z","iopub.status.idle":"2026-02-28T09:18:43.433644Z","shell.execute_reply.started":"2026-02-28T09:18:43.345197Z","shell.execute_reply":"2026-02-28T09:18:43.433025Z"}}
-# Rebuild valid_product_set / valid_bundle_set from disk in case Cell 4 was
-# skipped or the kernel restarted — images already on disk are still usable.
-_prod_on_disk = {p.stem for p in PROD_DIR.glob("*.jpg")}
-_bund_on_disk = {p.stem for p in BUND_DIR.glob("*.jpg")}
-if not valid_product_set and _prod_on_disk:
-    valid_product_set = _prod_on_disk
-    valid_product_ids = list(_prod_on_disk)
-    print(f"Rebuilt valid_product_set from disk: {len(valid_product_set):,}")
-if not valid_bundle_set and _bund_on_disk:
-    valid_bundle_set = _bund_on_disk
-    valid_bundle_ids = list(_bund_on_disk)
-    print(f"Rebuilt valid_bundle_set from disk: {len(valid_bundle_set):,}")
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:34:33.401442Z","iopub.execute_input":"2026-02-28T10:34:33.401758Z","iopub.status.idle":"2026-02-28T10:34:33.408230Z","shell.execute_reply.started":"2026-02-28T10:34:33.401702Z","shell.execute_reply":"2026-02-28T10:34:33.407425Z"}}
+def predict_baseline(bundle_ids: list[str], k: int = TOP_K) -> dict[str, list[str]]:
+    """Whole-image baseline: no segmentation, embed full bundle → top-k."""
+    predictions: dict[str, list[str]] = {}
+    for bid in tqdm(bundle_ids, desc="Baseline predict"):
+        if bid not in valid_bundle_set:
+            continue
+        img = load_image(bid, BUND_DIR)
+        if img is None:
+            continue
+        emb = _l2_norm(_encode_images_raw([img]))  # (1, 512)
+        scores, indices = index.search(emb, k)
+        top_pids = [idx_to_pid[int(i)] for i in indices[0] if int(i) in idx_to_pid]
+        predictions[bid] = top_pids[:k]
+        if DEVICE == "cuda":
+            torch.cuda.empty_cache()
+    return predictions
 
-if EMB_FILE.exists() and IDS_FILE.exists():
-    print("Loading cached product embeddings …")
-    product_embeddings = np.load(EMB_FILE)
-    with open(IDS_FILE) as f:
-        indexed_product_ids: list[str] = json.load(f)
-    print(f"  Loaded {product_embeddings.shape} from cache.")
-else:
-    print("Computing product embeddings (first run, ~15 min on T4) …")
-    # Only embed products we actually downloaded
-    ordered_ids  = [pid for pid in valid_product_ids if pid in valid_product_set]
-    ordered_paths = [PROD_DIR / f"{pid}.jpg" for pid in ordered_ids]
-    product_embeddings = embed_images_fashionclip(ordered_paths, batch_size=EMBED_BATCH)
-    indexed_product_ids = ordered_ids
-    np.save(EMB_FILE, product_embeddings)
-    with open(IDS_FILE, "w") as f:
-        json.dump(indexed_product_ids, f)
-    print(f"  Saved embeddings: {product_embeddings.shape}")
-
-# Reverse lookup
-idx_to_pid: dict[int, str] = {i: pid for i, pid in enumerate(indexed_product_ids)}
-
-# Build FAISS index
-DIM = product_embeddings.shape[1]  # 512
-print(f"\nBuilding FAISS IndexFlatIP (dim={DIM}, n={len(indexed_product_ids):,}) …")
-index_cpu = faiss.IndexFlatIP(DIM)
-index_cpu.add(product_embeddings)
-
-if DEVICE == "cuda":
-    try:
-        res = faiss.StandardGpuResources()
-        index = faiss.index_cpu_to_gpu(res, 0, index_cpu)
-        print("  Transferred index to GPU.")
-    except Exception as e:
-        print(f"  [WARN] GPU index failed ({e}), falling back to CPU.")
-        index = index_cpu
-else:
-    index = index_cpu
-    print("  Using CPU index.")
-
-print(f"  FAISS ntotal = {index.ntotal:,}")
-print(f"  indexed_product_ids count = {len(indexed_product_ids):,}")
-print(f"  valid_product_ids count   = {len(valid_product_ids):,}")
-print(f"  valid_product_set count   = {len(valid_product_set):,}")
-if index.ntotal < 1_000:
-    raise RuntimeError(
-        f"Only {index.ntotal} products indexed — something went wrong with download or embedding. "
-        "Delete the cache files and re-run:\n"
-        f"  {EMB_FILE}\n  {IDS_FILE}"
-    )
-elif index.ntotal < 20_000:
-    print(f"  [WARN] Only {index.ntotal:,} products indexed (expected ~27K). "
-          "Some downloads may have failed — results may be degraded.")
-
+print("predict_baseline() defined.")
 
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 8: SegFormer Segmentation
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T09:18:47.771843Z","iopub.execute_input":"2026-02-28T09:18:47.772444Z","iopub.status.idle":"2026-02-28T09:18:51.086729Z","shell.execute_reply.started":"2026-02-28T09:18:47.772420Z","shell.execute_reply":"2026-02-28T09:18:51.085933Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:34:35.765351Z","iopub.execute_input":"2026-02-28T10:34:35.765858Z","iopub.status.idle":"2026-02-28T10:34:38.940633Z","shell.execute_reply.started":"2026-02-28T10:34:35.765829Z","shell.execute_reply":"2026-02-28T10:34:38.939905Z"}}
 from transformers import SegformerImageProcessor, SegformerForSemanticSegmentation  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
 
@@ -508,6 +539,16 @@ SEGMENT_GROUPS: dict[str, list[int]] = {
     "bag":         [16],
     "hat":         [1],
     "scarf_belt":  [8, 17],
+}
+
+SEGMENT_TO_CATEGORIES: dict[str, set[str]] = {
+    "upper_body": {"T-SHIRT", "SHIRT", "SWEATER", "WIND-JACKET", "TOPS AND OTHERS", "BLAZER", "SWEATSHIRT", "BABY T-SHIRT", "POLO SHIRT"},
+    "lower_body": {"TROUSERS", "SKIRT", "BERMUDA", "BABY TROUSERS", "SHORTS", "LEGGINGS", "JEANS"},
+    "dress":      {"DRESS", "OVERALL", "JUMPSUIT"},
+    "shoes":      {"SHOE", "SHOES", "SNEAKER", "SNEAKERS", "BOOT", "BOOTS", "SANDAL", "SANDALS", "LOAFER"},
+    "bag":        {"HAND BAG-RUCKSACK", "HANDBAG", "BAG", "BACKPACK", "PURSE", "CLUTCH"},
+    "hat":        {"HAT", "CAP", "BEANIE"},
+    "scarf_belt": {"SCARF", "BELT", "TIE"},
 }
 
 ATR_COLORS = plt.cm.get_cmap("tab20", 18)
@@ -621,23 +662,68 @@ if demo_bid:
             plt.show()
 
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
-# ## Cell 9: Improved Pipeline (per-segment retrieval)
+# ## Cell 9: Text Re-ranking + Improved Pipeline (per-segment retrieval)
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T09:18:54.803810Z","iopub.execute_input":"2026-02-28T09:18:54.804387Z","iopub.status.idle":"2026-02-28T09:19:45.243244Z","shell.execute_reply.started":"2026-02-28T09:18:54.804359Z","shell.execute_reply":"2026-02-28T09:19:45.242501Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:34:42.259966Z","iopub.execute_input":"2026-02-28T10:34:42.260441Z","iopub.status.idle":"2026-02-28T10:34:42.268100Z","shell.execute_reply.started":"2026-02-28T10:34:42.260414Z","shell.execute_reply":"2026-02-28T10:34:42.267230Z"}}
+def text_rerank(
+    bundle_id: str,
+    candidate_pids: list[str],
+    crop_embs: np.ndarray,
+    alpha: float = TEXT_RERANK_ALPHA,
+) -> list[str]:
+    """
+    Linearly combine image similarity scores with text–image cross-similarity.
+    alpha: weight given to text score (0 = pure image, 1 = pure text).
+
+    crop_embs: (n_crops, 512) L2-normalised embeddings for the bundle's crops.
+    """
+    if not candidate_pids:
+        return candidate_pids
+
+    descriptions = [product_desc.get(pid, "") for pid in candidate_pids]
+    non_empty    = [(i, d) for i, d in enumerate(descriptions) if d.strip()]
+
+    if not non_empty:
+        return candidate_pids
+
+    indices_ne, descs_ne = zip(*non_empty)
+
+    text_embs = _l2_norm(_encode_texts_raw(list(descs_ne)))  # (n_text, 512)
+
+    # Cross-similarity: max over crops for each text embedding
+    sim = crop_embs @ text_embs.T  # (n_crops, n_text)
+    text_scores_ne = sim.max(axis=0)  # (n_text,)
+
+    # Combine with image rank (normalise rank to [0,1])
+    img_rank_score = np.array([1.0 - i / len(candidate_pids) for i in range(len(candidate_pids))])
+
+    text_score_full = np.zeros(len(candidate_pids))
+    for list_idx, orig_idx in enumerate(indices_ne):
+        text_score_full[orig_idx] = float(text_scores_ne[list_idx])
+
+    combined = (1 - alpha) * img_rank_score + alpha * text_score_full
+    order    = np.argsort(combined)[::-1]
+    return [candidate_pids[j] for j in order]
+
+
+print("text_rerank() defined.")
+
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:34:45.771846Z","iopub.execute_input":"2026-02-28T10:34:45.772358Z","iopub.status.idle":"2026-02-28T10:36:38.760959Z","shell.execute_reply.started":"2026-02-28T10:34:45.772333Z","shell.execute_reply":"2026-02-28T10:36:38.760176Z"}}
 def predict_segmented(
     bundle_ids: list[str],
     k: int = TOP_K,
-    k_per_segment: int = 10,
     fallback_to_whole: bool = True,
 ) -> dict[str, list[str]]:
     """
     Per-segment retrieval pipeline:
     1. SegFormer → garment crops
-    2. FashionCLIP encode each crop
-    3. FAISS query per segment (top k_per_segment)
-    4. Max-score aggregation (prevents boosting generic products)
-    5. Sort descending → top-k
-    6. Fallback to whole-image embedding if no segments detected
+    2. Active model encode each crop
+    3. FAISS query per segment (top K_PER_SEGMENT)
+    4. Category-aware filtering per segment
+    5. Sum-score aggregation across segments
+    6. Optional text re-ranking on top-TEXT_RERANK_TOP_N
+    7. Sort descending → top-k
+    8. Fallback to whole-image embedding if no segments detected
     """
     predictions: dict[str, list[str]] = {}
 
@@ -657,38 +743,40 @@ def predict_segmented(
             print(f"  [WARN] Segmentation failed for {bid}: {e}")
             crops = {}
 
-        use_fallback = (len(crops) == 0) and fallback_to_whole
-
         # ── Embedding ───────────────────────────────────────────────────────
         if crops:
-            crop_list   = list(crops.values())
-            seg_names   = list(crops.keys())
+            crop_list = list(crops.values())
+            seg_names = list(crops.keys())
         else:
             crop_list = [img]
             seg_names = ["whole"]
 
-        embs_norm = _l2_norm(_clip_encode_images_raw(crop_list))  # (n_crops, 512)
+        embs_norm = _l2_norm(_encode_images_raw(crop_list))  # (n_crops, 512)
 
         # ── FAISS query per segment ──────────────────────────────────────────
-        scores_map: dict[str, float] = {}  # product_id → best score seen
+        scores_map: dict[str, float] = {}  # product_id → accumulated score
 
-        scores_arr, indices_arr = index.search(embs_norm, k_per_segment)
-        # (n_crops, k_per_segment)
+        scores_arr, indices_arr = index.search(embs_norm, K_PER_SEGMENT)
+        # (n_crops, K_PER_SEGMENT)
 
-        for seg_scores, seg_indices in zip(scores_arr, indices_arr):
+        for seg_name, seg_scores, seg_indices in zip(seg_names, scores_arr, indices_arr):
+            allowed = {c.upper() for c in SEGMENT_TO_CATEGORIES.get(seg_name, set())}
             for sc, idx_val in zip(seg_scores, seg_indices):
-                if int(idx_val) not in idx_to_pid:
+                pid = idx_to_pid.get(int(idx_val))
+                if pid is None:
                     continue
-                pid = idx_to_pid[int(idx_val)]
-                sc_float = float(sc)
-                # Max-score aggregation
-                if pid not in scores_map or sc_float > scores_map[pid]:
-                    scores_map[pid] = sc_float
+                if allowed and product_desc.get(pid, "").strip().upper() not in allowed:
+                    continue  # skip wrong category
+                # Sum aggregation: reward products matching multiple segments
+                scores_map[pid] = scores_map.get(pid, 0.0) + float(sc)
 
-        # ── Sort & top-k ────────────────────────────────────────────────────
-        ranked = sorted(scores_map.items(), key=lambda x: x[1], reverse=True)
-        top_pids = [pid for pid, _ in ranked[:k]]
-        predictions[bid] = top_pids
+        # ── Text re-ranking on top candidates ───────────────────────────────
+        ranked_ext = sorted(scores_map.items(), key=lambda x: x[1], reverse=True)
+        top_pids = [pid for pid, _ in ranked_ext[:TEXT_RERANK_TOP_N]]
+        if ENABLE_TEXT_RERANK and top_pids:
+            top_pids = text_rerank(bid, top_pids, embs_norm, alpha=TEXT_RERANK_ALPHA)
+
+        predictions[bid] = top_pids[:k]
 
         if DEVICE == "cuda":
             torch.cuda.empty_cache()
@@ -701,11 +789,10 @@ print("Running segmented pipeline on test bundles …")
 segmented_preds = predict_segmented(test_bundle_ids, k=TOP_K)
 print(f"Segmented predictions for {len(segmented_preds)} bundles.")
 
-
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 10: Validation (Recall@15)
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T09:30:05.415213Z","iopub.execute_input":"2026-02-28T09:30:05.415950Z","iopub.status.idle":"2026-02-28T09:37:39.399761Z","shell.execute_reply.started":"2026-02-28T09:30:05.415917Z","shell.execute_reply":"2026-02-28T09:37:39.398948Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:37:32.207417Z","iopub.execute_input":"2026-02-28T10:37:32.207747Z","iopub.status.idle":"2026-02-28T10:51:08.849442Z","shell.execute_reply.started":"2026-02-28T10:37:32.207719Z","shell.execute_reply":"2026-02-28T10:51:08.848894Z"}}
 def recall_at_k(
     predictions: dict[str, list[str]],
     ground_truth: dict[str, set],
@@ -779,7 +866,10 @@ plt.show()
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 11: Generate Submission
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T09:37:46.404341Z","iopub.execute_input":"2026-02-28T09:37:46.404622Z","iopub.status.idle":"2026-02-28T09:37:46.443654Z","shell.execute_reply.started":"2026-02-28T09:37:46.404598Z","shell.execute_reply":"2026-02-28T09:37:46.443082Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:51:44.559041Z","iopub.execute_input":"2026-02-28T10:51:44.559358Z","iopub.status.idle":"2026-02-28T10:52:15.514118Z","shell.execute_reply.started":"2026-02-28T10:51:44.559332Z","shell.execute_reply":"2026-02-28T10:52:15.513478Z"}}
+# Generate test predictions for both methods
+baseline_preds = predict_baseline(test_bundle_ids, k=TOP_K)
+
 # Auto-select best method
 use_segmented = recall_seg >= recall_base
 method_name   = "segmented" if use_segmented else "baseline"
@@ -851,51 +941,10 @@ print("\nSubmission preview:")
 print(submission_df.head(20).to_string(index=False))
 
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
-# ## Cell 12: Bonus — Text Re-ranking
+# ## Cell 12: Text Re-ranking Demo
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T08:53:37.962374Z","iopub.status.idle":"2026-02-28T08:53:37.962750Z"}}
-def text_rerank(
-    bundle_id: str,
-    candidate_pids: list[str],
-    crop_embs: np.ndarray,
-    alpha: float = 0.3,
-) -> list[str]:
-    """
-    Linearly combine image similarity scores with text–image cross-similarity.
-    alpha: weight given to text score (0 = pure image, 1 = pure text).
-
-    crop_embs: (n_crops, 512) L2-normalised FashionCLIP embeddings for the bundle's crops.
-    """
-    if not candidate_pids:
-        return candidate_pids
-
-    descriptions = [product_desc.get(pid, "") for pid in candidate_pids]
-    non_empty    = [(i, d) for i, d in enumerate(descriptions) if d.strip()]
-
-    if not non_empty:
-        return candidate_pids
-
-    indices_ne, descs_ne = zip(*non_empty)
-
-    text_embs = _l2_norm(_clip_encode_texts_raw(list(descs_ne)))  # (n_text, 512)
-
-    # Cross-similarity: max over crops for each text embedding
-    sim = crop_embs @ text_embs.T  # (n_crops, n_text)
-    text_scores_ne = sim.max(axis=0)  # (n_text,)
-
-    # Combine with image rank (normalise rank to [0,1])
-    img_rank_score = np.array([1.0 - i / len(candidate_pids) for i in range(len(candidate_pids))])
-
-    text_score_full = np.zeros(len(candidate_pids))
-    for list_idx, orig_idx in enumerate(indices_ne):
-        text_score_full[orig_idx] = float(text_scores_ne[list_idx])
-
-    combined = (1 - alpha) * img_rank_score + alpha * text_score_full
-    order    = np.argsort(combined)[::-1]
-    return [candidate_pids[j] for j in order]
-
-
-# ── Demo text re-ranking on a few train bundles ───────────────────────────────
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:52:16.606498Z","iopub.execute_input":"2026-02-28T10:52:16.606955Z","iopub.status.idle":"2026-02-28T10:52:17.608671Z","shell.execute_reply.started":"2026-02-28T10:52:16.606921Z","shell.execute_reply":"2026-02-28T10:52:17.607946Z"}}
+# text_rerank() is defined in Cell 9 — demo only here.
 print("Demonstrating text re-ranking …")
 
 demo_rerank_bids = [bid for bid in train_bundle_ids_with_gt[:3] if bid in seg_train_preds]
@@ -913,10 +962,10 @@ for bid in demo_rerank_bids:
 
     crop_imgs = list(crops.values()) if crops else [img]
 
-    ce = _l2_norm(_clip_encode_images_raw(crop_imgs))
+    ce = _l2_norm(_encode_images_raw(crop_imgs))
 
     before = seg_train_preds.get(bid, [])[:TOP_K]
-    after  = text_rerank(bid, before[:], ce, alpha=0.3)
+    after  = text_rerank(bid, before[:], ce)
 
     gt = train_gt.get(bid, set())
     hit_before = len(set(before) & gt)
@@ -926,7 +975,7 @@ for bid in demo_rerank_bids:
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Summary
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T08:53:37.967021Z","iopub.status.idle":"2026-02-28T08:53:37.967309Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:52:26.539479Z","iopub.execute_input":"2026-02-28T10:52:26.540177Z","iopub.status.idle":"2026-02-28T10:52:26.546297Z","shell.execute_reply.started":"2026-02-28T10:52:26.540150Z","shell.execute_reply":"2026-02-28T10:52:26.545604Z"}}
 print("\n" + "=" * 60)
 print("HACKUDC 2026 — SOLUTION SUMMARY")
 print("=" * 60)
@@ -934,7 +983,7 @@ print(f"Products indexed         : {index.ntotal:,}")
 print(f"Embedding dimension      : {DIM}")
 print(f"FAISS backend            : {'GPU' if DEVICE == 'cuda' else 'CPU'}")
 print(f"Segmentation model       : SegFormer B2 (ATR 17 classes)")
-print(f"Retrieval model          : FashionCLIP (512-dim)")
+print(f"Retrieval model          : {'Marqo-FashionSigLIP' if USE_MARQO else 'FashionCLIP'} (512-dim)")
 print(f"Baseline Recall@{TOP_K}    : {recall_base:.4f}")
 print(f"Segmented Recall@{TOP_K}   : {recall_seg:.4f}")
 print(f"Method selected          : {method_name}")

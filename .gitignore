@@ -1,2 +1,7 @@
 .claude/
 data/
+submissions/
+output/
+cache/
+checkpoints/
+Pipfile

@@ -1,0 +1,30 @@
+# requirements.txt — Fashion Retrieval GTX 1650 Ti (4GB VRAM)
+# Python 3.10+
+# CUDA 11.8+ recomendado
+
+# Core deep learning
+torch>=2.1.0
+torchvision>=0.16.0
+# Instala con CUDA: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+
+# Transformers / FashionCLIP
+transformers>=4.38.0
+accelerate>=0.27.0
+
+# LoRA (opcional, para USE_LORA=True)
+peft>=0.9.0
+
+# FAISS — versión CPU o GPU
+faiss-cpu>=1.7.4
+# Para GPU: pip install faiss-gpu  (requiere CUDA toolkit)
+
+# Data & utils
+pandas>=2.0.0
+numpy>=1.24.0
+Pillow>=10.0.0
+requests>=2.31.0
+tqdm>=4.66.0
+scikit-learn>=1.3.0
+
+# Image augmentation avanzada (opcional)
+albumentations>=1.3.0

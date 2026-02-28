@@ -33,6 +33,7 @@ import os
 import gc
 import json
 import math
+import time
 import warnings
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -88,14 +89,22 @@ IDS_FILE       = WORK_DIR / f"product_ids_{MODEL_TAG}.json"
 # ── Hyper-params ─────────────────────────────────────────────────────────────
 TOP_K            = 15
 EMBED_BATCH      = 64
-DOWNLOAD_WORKERS = 16
-IMG_SIZE         = 224   # FashionCLIP canonical input size
-DOWNLOAD_TIMEOUT = 10    # seconds per request
-K_PER_SEGMENT    = 50    # candidates per segment before category filter
+DOWNLOAD_WORKERS = 32   # parallel download threads
+IMG_SIZE         = 224  # FashionCLIP canonical input size
+DOWNLOAD_TIMEOUT = 20   # seconds per request (increased)
+DOWNLOAD_RETRIES = 3    # per-image retry attempts with backoff
+K_PER_SEGMENT    = 150  # candidates per segment before category filter (increased)
 AGGREGATION      = "sum" # score aggregation: "sum" or "max"
 ENABLE_TEXT_RERANK  = True
-TEXT_RERANK_ALPHA   = 0.25
-TEXT_RERANK_TOP_N   = 30
+TEXT_RERANK_ALPHA   = 0.20  # slightly less text weight (image more reliable)
+TEXT_RERANK_TOP_N   = 50   # more candidates to re-rank
+
+# HTTP headers to avoid CDN bot-blocks
+DOWNLOAD_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+}
 
 print("\nConfiguration loaded.")
 
@@ -148,30 +157,55 @@ print(f"\nTest bundle IDs: {len(test_bundle_ids)}")
 # ## Cell 4: Image Download + Preview
 
 # %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:04:57.641150Z","iopub.execute_input":"2026-02-28T10:04:57.641352Z","iopub.status.idle":"2026-02-28T10:06:10.901561Z","shell.execute_reply.started":"2026-02-28T10:04:57.641333Z","shell.execute_reply":"2026-02-28T10:06:10.900857Z"}}
-def download_image(asset_id: str, url: str, out_dir: Path, timeout: int = DOWNLOAD_TIMEOUT) -> bool:
-    """Download image if not already cached. Returns True on success."""
+def download_image(
+    asset_id: str,
+    url: str,
+    out_dir: Path,
+    timeout: int = DOWNLOAD_TIMEOUT,
+    retries: int = DOWNLOAD_RETRIES,
+) -> bool:
+    """Download image with retries + exponential backoff. Returns True on success."""
     out_path = out_dir / f"{asset_id}.jpg"
     if out_path.exists():
         return True
-    try:
-        r = requests.get(url, timeout=timeout)
-        r.raise_for_status()
-        out_path.write_bytes(r.content)
-        return True
-    except Exception:
-        return False
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, timeout=timeout, headers=DOWNLOAD_HEADERS)
+            r.raise_for_status()
+            # Validate that response is a non-empty image
+            if len(r.content) < 500:
+                raise ValueError(f"Response too small ({len(r.content)} bytes), likely an error page")
+            out_path.write_bytes(r.content)
+            return True
+        except Exception:
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)  # 1s, 2s, 4s backoff
+    return False
 
 
-def batch_download(id_url_pairs: list[tuple[str, str]], out_dir: Path, desc: str = "Downloading") -> list[str]:
-    """Parallel download with ThreadPoolExecutor. Returns list of successfully downloaded IDs."""
+def batch_download(
+    id_url_pairs: list[tuple[str, str]],
+    out_dir: Path,
+    desc: str = "Downloading",
+    timeout: int = DOWNLOAD_TIMEOUT,
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """Parallel download with ThreadPoolExecutor.
+    Returns (ok_ids, failed_pairs) where failed_pairs can be retried.
+    """
     ok_ids: list[str] = []
+    failed_pairs: list[tuple[str, str]] = []
     with ThreadPoolExecutor(max_workers=DOWNLOAD_WORKERS) as pool:
-        futures = {pool.submit(download_image, aid, url, out_dir): aid for aid, url in id_url_pairs}
+        futures = {
+            pool.submit(download_image, aid, url, out_dir, timeout): (aid, url)
+            for aid, url in id_url_pairs
+        }
         for fut in tqdm(as_completed(futures), total=len(futures), desc=desc):
-            aid = futures[fut]
+            aid, url = futures[fut]
             if fut.result():
                 ok_ids.append(aid)
-    return ok_ids
+            else:
+                failed_pairs.append((aid, url))
+    return ok_ids, failed_pairs
 
 
 def load_image(asset_id: str, img_dir: Path) -> Image.Image | None:
@@ -185,15 +219,38 @@ def load_image(asset_id: str, img_dir: Path) -> Image.Image | None:
         return None
 
 
-# Download products (~27K)
+# ── Download products (~27K) ─────────────────────────────────────────────────
 product_pairs = [(pid, url) for pid, url in product_url.items()]
-valid_product_ids = batch_download(product_pairs, PROD_DIR, desc="Products")
-print(f"\nProducts downloaded: {len(valid_product_ids):,} / {len(product_pairs):,} "
+_prod_ok, _prod_failed = batch_download(product_pairs, PROD_DIR, desc="Products pass-1")
+print(f"\nProducts pass-1: {len(_prod_ok):,} ok, {len(_prod_failed):,} failed")
+
+# Retry pass with longer timeout
+if _prod_failed:
+    print(f"Retrying {len(_prod_failed):,} failed products (60s timeout) …")
+    _prod_ok2, _prod_failed2 = batch_download(
+        _prod_failed, PROD_DIR, desc="Products pass-2", timeout=60
+    )
+    _prod_ok += _prod_ok2
+    print(f"  Retry recovered: {len(_prod_ok2):,}  still failed: {len(_prod_failed2):,}")
+
+valid_product_ids = _prod_ok
+print(f"Products downloaded: {len(valid_product_ids):,} / {len(product_pairs):,} "
       f"({100*len(valid_product_ids)/len(product_pairs):.1f}%)")
 
-# Download bundles (~2.3K)
+# ── Download bundles (~2.3K) ─────────────────────────────────────────────────
 bundle_pairs = [(bid, url) for bid, url in bundle_url.items()]
-valid_bundle_ids = batch_download(bundle_pairs, BUND_DIR, desc="Bundles ")
+_bund_ok, _bund_failed = batch_download(bundle_pairs, BUND_DIR, desc="Bundles  pass-1")
+print(f"\nBundles  pass-1: {len(_bund_ok):,} ok, {len(_bund_failed):,} failed")
+
+if _bund_failed:
+    print(f"Retrying {len(_bund_failed):,} failed bundles (60s timeout) …")
+    _bund_ok2, _bund_failed2 = batch_download(
+        _bund_failed, BUND_DIR, desc="Bundles  pass-2", timeout=60
+    )
+    _bund_ok += _bund_ok2
+    print(f"  Retry recovered: {len(_bund_ok2):,}  still failed: {len(_bund_failed2):,}")
+
+valid_bundle_ids = _bund_ok
 print(f"Bundles downloaded : {len(valid_bundle_ids):,} / {len(bundle_pairs):,} "
       f"({100*len(valid_bundle_ids)/len(bundle_pairs):.1f}%)")
 
@@ -708,6 +765,25 @@ def text_rerank(
 
 print("text_rerank() defined.")
 
+
+def _category_match(desc: str, allowed: set) -> bool:
+    """
+    Returns True if `desc` (product description / category) matches any string in `allowed`.
+    Uses substring matching (both directions) to handle plurals and compound names:
+      - "SHOES" matches allowed={"SHOE"}
+      - "SNEAKERS" matches allowed={"SNEAKER"}
+      - "HAND BAG-RUCKSACK" matches allowed={"HANDBAG", "BAG"}
+    Empty descriptions pass through (don't exclude unknown categories).
+    """
+    if not desc.strip():
+        return True  # unknown category: do not exclude
+    d = desc.strip().upper()
+    for cat in allowed:
+        c = cat.upper()
+        if d == c or d.startswith(c) or c.startswith(d) or c in d or d in c:
+            return True
+    return False
+
 # %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:34:45.771846Z","iopub.execute_input":"2026-02-28T10:34:45.772358Z","iopub.status.idle":"2026-02-28T10:36:38.760959Z","shell.execute_reply.started":"2026-02-28T10:34:45.772333Z","shell.execute_reply":"2026-02-28T10:36:38.760176Z"}}
 def predict_segmented(
     bundle_ids: list[str],
@@ -755,20 +831,37 @@ def predict_segmented(
 
         # ── FAISS query per segment ──────────────────────────────────────────
         scores_map: dict[str, float] = {}  # product_id → accumulated score
+        n_filtered_fallback = 0  # diagnostic counter
 
         scores_arr, indices_arr = index.search(embs_norm, K_PER_SEGMENT)
         # (n_crops, K_PER_SEGMENT)
 
         for seg_name, seg_scores, seg_indices in zip(seg_names, scores_arr, indices_arr):
-            allowed = {c.upper() for c in SEGMENT_TO_CATEGORIES.get(seg_name, set())}
+            allowed = SEGMENT_TO_CATEGORIES.get(seg_name, set())
+
+            filtered: list[tuple[str, float]] = []
+            unfiltered: list[tuple[str, float]] = []
+
             for sc, idx_val in zip(seg_scores, seg_indices):
                 pid = idx_to_pid.get(int(idx_val))
                 if pid is None:
                     continue
-                if allowed and product_desc.get(pid, "").strip().upper() not in allowed:
-                    continue  # skip wrong category
-                # Sum aggregation: reward products matching multiple segments
-                scores_map[pid] = scores_map.get(pid, 0.0) + float(sc)
+                unfiltered.append((pid, float(sc)))
+                desc = product_desc.get(pid, "")
+                if not allowed or _category_match(desc, allowed):
+                    filtered.append((pid, float(sc)))
+
+            # Fallback: if category filter emptied the results, use unfiltered with a
+            # 50% score penalty to signal lower confidence.
+            if filtered:
+                to_add = filtered
+            else:
+                to_add = [(p, s * 0.50) for p, s in unfiltered[: K_PER_SEGMENT // 4]]
+                n_filtered_fallback += 1
+
+            # Sum aggregation: reward products matching multiple segments
+            for pid, sc in to_add:
+                scores_map[pid] = scores_map.get(pid, 0.0) + sc
 
         # ── Text re-ranking on top candidates ───────────────────────────────
         ranked_ext = sorted(scores_map.items(), key=lambda x: x[1], reverse=True)
@@ -927,15 +1020,37 @@ max_preds = submission_df.groupby("bundle_asset_id")["product_asset_id"].count()
 assert max_preds <= TOP_K, f"Bundle has {max_preds} predictions (max={TOP_K})"
 print(f"  [OK] Max predictions per bundle: {max_preds}")
 
-# 3. All product IDs are valid
+# 3. All product IDs are valid (in the full catalog)
 predicted_pids = set(submission_df["product_asset_id"])
-invalid_pids   = predicted_pids - valid_product_set
+# Validate against the full catalog (not just downloaded) — downloaded set may be partial
+all_catalog_pids = set(products_df["product_asset_id"])
+invalid_pids = predicted_pids - all_catalog_pids
 if invalid_pids:
-    print(f"  [WARN] {len(invalid_pids)} invalid product IDs — removing.")
+    print(f"  [WARN] {len(invalid_pids)} product IDs not in catalog — removing.")
     submission_df = submission_df[~submission_df["product_asset_id"].isin(invalid_pids)]
+
+    # Refill bundles that now have < TOP_K predictions
+    existing_by_bundle: dict[str, list[str]] = (
+        submission_df.groupby("bundle_asset_id")["product_asset_id"]
+        .apply(list).to_dict()
+    )
+    refill_rows: list[dict] = []
+    for bid in test_bundle_ids:
+        curr = existing_by_bundle.get(bid, [])
+        for fp in fallback_pids:
+            if len(curr) >= TOP_K:
+                break
+            if fp not in curr:
+                curr.append(fp)
+                refill_rows.append({"bundle_asset_id": bid, "product_asset_id": fp})
+    if refill_rows:
+        submission_df = pd.concat(
+            [submission_df, pd.DataFrame(refill_rows)], ignore_index=True
+        )
+        print(f"  Refilled {len(refill_rows)} predictions from fallback.")
     submission_df.to_csv(SUBM_FILE, index=False)
 else:
-    print(f"  [OK] All {len(predicted_pids):,} product IDs are valid.")
+    print(f"  [OK] All {len(predicted_pids):,} product IDs are valid catalog entries.")
 
 print("\nSubmission preview:")
 print(submission_df.head(20).to_string(index=False))

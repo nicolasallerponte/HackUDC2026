@@ -7,7 +7,7 @@
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 1: Setup
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:04:49.254018Z","iopub.execute_input":"2026-02-28T10:04:49.254740Z","iopub.status.idle":"2026-02-28T10:04:57.487881Z","shell.execute_reply.started":"2026-02-28T10:04:49.254684Z","shell.execute_reply":"2026-02-28T10:04:57.487304Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T11:55:28.541411Z","iopub.execute_input":"2026-02-28T11:55:28.542186Z","iopub.status.idle":"2026-02-28T11:55:36.157055Z","shell.execute_reply.started":"2026-02-28T11:55:28.542148Z","shell.execute_reply":"2026-02-28T11:55:36.156438Z"}}
 import subprocess, sys
 
 def _pip(*args):
@@ -28,7 +28,7 @@ except Exception:
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 2: Imports & Configuration
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:04:57.489282Z","iopub.execute_input":"2026-02-28T10:04:57.489508Z","iopub.status.idle":"2026-02-28T10:04:57.499500Z","shell.execute_reply.started":"2026-02-28T10:04:57.489489Z","shell.execute_reply":"2026-02-28T10:04:57.498841Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T11:55:36.158385Z","iopub.execute_input":"2026-02-28T11:55:36.158661Z","iopub.status.idle":"2026-02-28T11:55:36.169461Z","shell.execute_reply.started":"2026-02-28T11:55:36.158632Z","shell.execute_reply":"2026-02-28T11:55:36.168606Z"}}
 import os
 import gc
 import json
@@ -93,11 +93,19 @@ DOWNLOAD_WORKERS = 32   # parallel download threads
 IMG_SIZE         = 224  # FashionCLIP canonical input size
 DOWNLOAD_TIMEOUT = 20   # seconds per request (increased)
 DOWNLOAD_RETRIES = 3    # per-image retry attempts with backoff
-K_PER_SEGMENT    = 150  # candidates per segment before category filter (increased)
-AGGREGATION      = "sum" # score aggregation: "sum" or "max"
-ENABLE_TEXT_RERANK  = True
-TEXT_RERANK_ALPHA   = 0.20  # slightly less text weight (image more reliable)
-TEXT_RERANK_TOP_N   = 50   # more candidates to re-rank
+K_PER_SEGMENT    = 150  # candidates per segment (base, scaled dynamically)
+AGGREGATION      = "sum" # score aggregation (sum rewards multi-segment hits)
+# Text re-ranking: product_description is a coarse label ("TROUSERS"), not rich
+# text — the CLIP cross-similarity is near-uniform noise. Disabled.
+ENABLE_TEXT_RERANK  = False
+TEXT_RERANK_ALPHA   = 0.20
+TEXT_RERANK_TOP_N   = 80   # window size if re-ranking is re-enabled
+# Adaptive routing: use segmented only when this many distinct crops detected
+SEG_MIN_CROPS       = 2    # <2 crops → fall back to baseline whole-image query
+# Whole-image embedding weight when combined with segment scores
+WHOLE_IMG_WEIGHT    = 0.5  # additive bonus for the full-scene context
+# TTA: number of augmented views to average for query embedding
+TTA_N_VIEWS         = 3    # 1 = disabled, 2-3 = mild, adds ~2× query time
 
 # HTTP headers to avoid CDN bot-blocks
 DOWNLOAD_HEADERS = {
@@ -111,7 +119,7 @@ print("\nConfiguration loaded.")
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 3: Data Loading
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:04:57.500508Z","iopub.execute_input":"2026-02-28T10:04:57.500785Z","iopub.status.idle":"2026-02-28T10:04:57.640323Z","shell.execute_reply.started":"2026-02-28T10:04:57.500755Z","shell.execute_reply":"2026-02-28T10:04:57.639597Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T11:55:36.170444Z","iopub.execute_input":"2026-02-28T11:55:36.170694Z","iopub.status.idle":"2026-02-28T11:55:36.308406Z","shell.execute_reply.started":"2026-02-28T11:55:36.170675Z","shell.execute_reply":"2026-02-28T11:55:36.307650Z"}}
 bundles_df = pd.read_csv(DATA_DIR / "bundles_dataset.csv")
 products_df = pd.read_csv(DATA_DIR / "product_dataset.csv")
 train_df = pd.read_csv(DATA_DIR / "bundles_product_match_train.csv")
@@ -156,7 +164,7 @@ print(f"\nTest bundle IDs: {len(test_bundle_ids)}")
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 4: Image Download + Preview
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:04:57.641150Z","iopub.execute_input":"2026-02-28T10:04:57.641352Z","iopub.status.idle":"2026-02-28T10:06:10.901561Z","shell.execute_reply.started":"2026-02-28T10:04:57.641333Z","shell.execute_reply":"2026-02-28T10:06:10.900857Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T11:55:36.310456Z","iopub.execute_input":"2026-02-28T11:55:36.310659Z","iopub.status.idle":"2026-02-28T11:55:48.430134Z","shell.execute_reply.started":"2026-02-28T11:55:36.310641Z","shell.execute_reply":"2026-02-28T11:55:48.429463Z"}}
 def download_image(
     asset_id: str,
     url: str,
@@ -288,7 +296,7 @@ show_images(valid_bundle_ids[:5],   BUND_DIR, title="Bundle Sample")
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 5: FashionCLIP Loading
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:08:35.322487Z","iopub.execute_input":"2026-02-28T10:08:35.323027Z","iopub.status.idle":"2026-02-28T10:08:42.897941Z","shell.execute_reply.started":"2026-02-28T10:08:35.322997Z","shell.execute_reply":"2026-02-28T10:08:42.897223Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T11:55:48.431141Z","iopub.execute_input":"2026-02-28T11:55:48.431434Z","iopub.status.idle":"2026-02-28T11:55:53.507620Z","shell.execute_reply.started":"2026-02-28T11:55:48.431406Z","shell.execute_reply":"2026-02-28T11:55:53.506876Z"}}
 from fashion_clip.fashion_clip import FashionCLIP  # noqa: E402
 import fashion_clip.fashion_clip as _fc_module      # noqa: E402
 
@@ -451,13 +459,32 @@ def _embed_images(image_paths: list, batch_size: int = EMBED_BATCH) -> np.ndarra
     return np.concatenate(all_embs, axis=0)
 
 
-print("Unified encode helpers ready.")
+# ── Test-Time Augmentation (TTA) for query images ─────────────────────────────
+def tta_encode(img: Image.Image, n_views: int = TTA_N_VIEWS) -> np.ndarray:
+    """
+    Encode a query image averaged over n_views augmented variants.
+    Augmentations: original + horizontal flip + 5% centre crop.
+    Returns (1, D) L2-normalised averaged embedding.
+    """
+    augments: list[Image.Image] = [img]
+    if n_views >= 2:
+        augments.append(img.transpose(Image.FLIP_LEFT_RIGHT))
+    if n_views >= 3:
+        w, h = img.size
+        margin = max(1, int(min(w, h) * 0.05))
+        augments.append(
+            img.crop((margin, margin, w - margin, h - margin)).resize((w, h), Image.BILINEAR)
+        )
+    embs = np.stack([_l2_norm(_encode_images_raw([a]))[0] for a in augments[:n_views]])
+    return _l2_norm(embs.mean(axis=0, keepdims=True))  # (1, D)
 
+
+print("Unified encode helpers + TTA ready.")
 
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 6: Product Embeddings + FAISS Index
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:08:46.502118Z","iopub.execute_input":"2026-02-28T10:08:46.502417Z","iopub.status.idle":"2026-02-28T10:34:30.837583Z","shell.execute_reply.started":"2026-02-28T10:08:46.502393Z","shell.execute_reply":"2026-02-28T10:34:30.836876Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T12:00:22.751298Z","iopub.execute_input":"2026-02-28T12:00:22.751910Z","iopub.status.idle":"2026-02-28T12:38:49.771119Z","shell.execute_reply.started":"2026-02-28T12:00:22.751883Z","shell.execute_reply":"2026-02-28T12:38:49.770350Z"}}
 def _ensure_valid_sets():
     """Rebuild valid_product/bundle sets from disk if empty (survives kernel restarts)."""
     global valid_product_set, valid_product_ids, valid_bundle_set, valid_bundle_ids
@@ -475,16 +502,37 @@ def _ensure_valid_sets():
 
 _ensure_valid_sets()
 
+# ── Cache validity check ──────────────────────────────────────────────────────
+# The cache may have been built in an earlier run with fewer downloaded products.
+# If the number of cached IDs doesn't match what's currently on disk, bust it.
+_cache_valid = False
 if EMB_FILE.exists() and IDS_FILE.exists():
+    with open(IDS_FILE) as _f:
+        _cached_ids: list[str] = json.load(_f)
+    _n_cached   = len(_cached_ids)
+    _n_on_disk  = len(valid_product_set)
+    _missing    = valid_product_set - set(_cached_ids)
+    if _missing:
+        print(
+            f"  [CACHE STALE] Cache has {_n_cached:,} products but "
+            f"{_n_on_disk:,} are on disk ({len(_missing):,} missing). "
+            f"Deleting stale cache and recomputing …"
+        )
+        EMB_FILE.unlink(missing_ok=True)
+        IDS_FILE.unlink(missing_ok=True)
+    else:
+        _cache_valid = True
+
+if _cache_valid:
     print("Loading cached product embeddings …")
     product_embeddings = np.load(EMB_FILE)
     with open(IDS_FILE) as f:
         indexed_product_ids: list[str] = json.load(f)
     print(f"  Loaded {product_embeddings.shape} from cache.")
 else:
-    print("Computing product embeddings (first run, ~15 min on T4) …")
-    # Only embed products we actually downloaded
-    ordered_ids  = [pid for pid in valid_product_ids if pid in valid_product_set]
+    print("Computing product embeddings (first run, ~15–20 min on T4) …")
+    # Embed every product we have on disk, in a stable sorted order
+    ordered_ids   = sorted(valid_product_set)          # deterministic order
     ordered_paths = [PROD_DIR / f"{pid}.jpg" for pid in ordered_ids]
     product_embeddings = _embed_images(ordered_paths, batch_size=EMBED_BATCH)
     indexed_product_ids = ordered_ids
@@ -531,9 +579,9 @@ elif index.ntotal < 20_000:
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 7: Baseline Pipeline (whole-image retrieval)
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:34:33.401442Z","iopub.execute_input":"2026-02-28T10:34:33.401758Z","iopub.status.idle":"2026-02-28T10:34:33.408230Z","shell.execute_reply.started":"2026-02-28T10:34:33.401702Z","shell.execute_reply":"2026-02-28T10:34:33.407425Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T12:40:28.002936Z","iopub.execute_input":"2026-02-28T12:40:28.003598Z","iopub.status.idle":"2026-02-28T12:40:28.009875Z","shell.execute_reply.started":"2026-02-28T12:40:28.003565Z","shell.execute_reply":"2026-02-28T12:40:28.009164Z"}}
 def predict_baseline(bundle_ids: list[str], k: int = TOP_K) -> dict[str, list[str]]:
-    """Whole-image baseline: no segmentation, embed full bundle → top-k."""
+    """Whole-image baseline: no segmentation, TTA-encode full bundle → top-k."""
     predictions: dict[str, list[str]] = {}
     for bid in tqdm(bundle_ids, desc="Baseline predict"):
         if bid not in valid_bundle_set:
@@ -541,7 +589,7 @@ def predict_baseline(bundle_ids: list[str], k: int = TOP_K) -> dict[str, list[st
         img = load_image(bid, BUND_DIR)
         if img is None:
             continue
-        emb = _l2_norm(_encode_images_raw([img]))  # (1, 512)
+        emb = tta_encode(img)  # (1, D), averaged over TTA_N_VIEWS augmented views
         scores, indices = index.search(emb, k)
         top_pids = [idx_to_pid[int(i)] for i in indices[0] if int(i) in idx_to_pid]
         predictions[bid] = top_pids[:k]
@@ -554,7 +602,7 @@ print("predict_baseline() defined.")
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 8: SegFormer Segmentation
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:34:35.765351Z","iopub.execute_input":"2026-02-28T10:34:35.765858Z","iopub.status.idle":"2026-02-28T10:34:38.940633Z","shell.execute_reply.started":"2026-02-28T10:34:35.765829Z","shell.execute_reply":"2026-02-28T10:34:38.939905Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T12:40:30.192783Z","iopub.execute_input":"2026-02-28T12:40:30.193572Z","iopub.status.idle":"2026-02-28T12:40:33.738078Z","shell.execute_reply.started":"2026-02-28T12:40:30.193537Z","shell.execute_reply":"2026-02-28T12:40:33.737303Z"}}
 from transformers import SegformerImageProcessor, SegformerForSemanticSegmentation  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
 
@@ -721,7 +769,7 @@ if demo_bid:
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 9: Text Re-ranking + Improved Pipeline (per-segment retrieval)
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:34:42.259966Z","iopub.execute_input":"2026-02-28T10:34:42.260441Z","iopub.status.idle":"2026-02-28T10:34:42.268100Z","shell.execute_reply.started":"2026-02-28T10:34:42.260414Z","shell.execute_reply":"2026-02-28T10:34:42.267230Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T12:40:37.614103Z","iopub.execute_input":"2026-02-28T12:40:37.614815Z","iopub.status.idle":"2026-02-28T12:40:37.627331Z","shell.execute_reply.started":"2026-02-28T12:40:37.614779Z","shell.execute_reply":"2026-02-28T12:40:37.626365Z"}}
 def text_rerank(
     bundle_id: str,
     candidate_pids: list[str],
@@ -784,22 +832,25 @@ def _category_match(desc: str, allowed: set) -> bool:
             return True
     return False
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:34:45.771846Z","iopub.execute_input":"2026-02-28T10:34:45.772358Z","iopub.status.idle":"2026-02-28T10:36:38.760959Z","shell.execute_reply.started":"2026-02-28T10:34:45.772333Z","shell.execute_reply":"2026-02-28T10:36:38.760176Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T12:40:40.803409Z","iopub.execute_input":"2026-02-28T12:40:40.803738Z","iopub.status.idle":"2026-02-28T12:46:29.473087Z","shell.execute_reply.started":"2026-02-28T12:40:40.803699Z","shell.execute_reply":"2026-02-28T12:46:29.472299Z"}}
 def predict_segmented(
     bundle_ids: list[str],
     k: int = TOP_K,
-    fallback_to_whole: bool = True,
 ) -> dict[str, list[str]]:
     """
-    Per-segment retrieval pipeline:
-    1. SegFormer → garment crops
-    2. Active model encode each crop
-    3. FAISS query per segment (top K_PER_SEGMENT)
-    4. Category-aware filtering per segment
-    5. Sum-score aggregation across segments
-    6. Optional text re-ranking on top-TEXT_RERANK_TOP_N
-    7. Sort descending → top-k
-    8. Fallback to whole-image embedding if no segments detected
+    Improved per-segment retrieval pipeline:
+
+    1.  SegFormer → garment crops
+    2.  Adaptive routing: if <SEG_MIN_CROPS crops detected, use TTA whole-image
+        baseline instead (avoids hurting easy 1-2 product bundles).
+    3.  TTA encode each crop (original + flip + slight crop-resize average)
+    4.  FAISS query per segment (top K_dynamic)
+    5.  Category-aware filtering per segment
+    6.  Per-segment L2-score normalisation before aggregation (avoids scale bias)
+    7.  Sum-score aggregation + whole-image embedding bonus (WHOLE_IMG_WEIGHT)
+    8.  Optional text re-ranking (disabled by default — product_description is
+        coarse label, not rich text)
+    9.  Sort descending → top-k
     """
     predictions: dict[str, list[str]] = {}
 
@@ -819,22 +870,33 @@ def predict_segmented(
             print(f"  [WARN] Segmentation failed for {bid}: {e}")
             crops = {}
 
-        # ── Embedding ───────────────────────────────────────────────────────
-        if crops:
-            crop_list = list(crops.values())
-            seg_names = list(crops.keys())
-        else:
-            crop_list = [img]
-            seg_names = ["whole"]
+        # ── Adaptive routing ────────────────────────────────────────────────
+        # For bundles with <SEG_MIN_CROPS distinct garment crops, segmented
+        # retrieval introduces more noise than signal — route to whole-image.
+        if len(crops) < SEG_MIN_CROPS:
+            whole_emb = tta_encode(img)  # (1, D), TTA averaged
+            scores, indices = index.search(whole_emb, k)
+            top_pids = [idx_to_pid[int(i)] for i in indices[0] if int(i) in idx_to_pid]
+            predictions[bid] = top_pids[:k]
+            if DEVICE == "cuda":
+                torch.cuda.empty_cache()
+            continue
 
-        embs_norm = _l2_norm(_encode_images_raw(crop_list))  # (n_crops, 512)
+        # ── TTA-encode each crop ─────────────────────────────────────────────
+        crop_list  = list(crops.values())
+        seg_names  = list(crops.keys())
+        # Stack TTA embeddings: (n_crops, D)
+        embs_norm = np.vstack([tta_encode(c) for c in crop_list])
+
+        # ── Dynamic K: more crops → larger candidate pool ────────────────────
+        K_dynamic = K_PER_SEGMENT * max(1, len(crops) // 2)
+        # e.g. 2 crops → 150, 4 crops → 300
 
         # ── FAISS query per segment ──────────────────────────────────────────
         scores_map: dict[str, float] = {}  # product_id → accumulated score
-        n_filtered_fallback = 0  # diagnostic counter
 
-        scores_arr, indices_arr = index.search(embs_norm, K_PER_SEGMENT)
-        # (n_crops, K_PER_SEGMENT)
+        scores_arr, indices_arr = index.search(embs_norm, K_dynamic)
+        # (n_crops, K_dynamic)
 
         for seg_name, seg_scores, seg_indices in zip(seg_names, scores_arr, indices_arr):
             allowed = SEGMENT_TO_CATEGORIES.get(seg_name, set())
@@ -851,19 +913,42 @@ def predict_segmented(
                 if not allowed or _category_match(desc, allowed):
                     filtered.append((pid, float(sc)))
 
-            # Fallback: if category filter emptied the results, use unfiltered with a
-            # 50% score penalty to signal lower confidence.
+            # Fallback: if category filter emptied the results, use unfiltered
+            # with a 50% score penalty to signal lower confidence.
             if filtered:
                 to_add = filtered
             else:
-                to_add = [(p, s * 0.50) for p, s in unfiltered[: K_PER_SEGMENT // 4]]
-                n_filtered_fallback += 1
+                to_add = [(p, s * 0.50) for p, s in unfiltered[: K_dynamic // 4]]
 
-            # Sum aggregation: reward products matching multiple segments
+            # ── Per-segment Z-score normalisation ───────────────────────────
+            # Different segment types have different typical cosine score ranges;
+            # normalise to zero mean / unit std so no segment dominates the sum.
+            raw_vals = np.array([s for _, s in to_add], dtype=np.float32)
+            if len(raw_vals) > 1:
+                mu, sigma = raw_vals.mean(), raw_vals.std() + 1e-8
+                to_add = [(p, float((s - mu) / sigma)) for p, s in to_add]
+
+            # ── Sum aggregation (rewards cross-segment hits) ─────────────────
             for pid, sc in to_add:
                 scores_map[pid] = scores_map.get(pid, 0.0) + sc
 
-        # ── Text re-ranking on top candidates ───────────────────────────────
+        # ── Whole-image embedding bonus ──────────────────────────────────────
+        # Fuse a TTA whole-image query result into the score map so that
+        # products matched by the global scene context are never fully excluded.
+        whole_emb = tta_encode(img)  # (1, D)
+        w_scores, w_indices = index.search(whole_emb, K_PER_SEGMENT)
+        w_raw = w_scores[0]  # (K_PER_SEGMENT,)
+        if len(w_raw) > 1:
+            mu_w = w_raw.mean(); sigma_w = w_raw.std() + 1e-8
+            w_norm = (w_raw - mu_w) / sigma_w
+        else:
+            w_norm = w_raw
+        for norm_sc, idx_val in zip(w_norm, w_indices[0]):
+            pid = idx_to_pid.get(int(idx_val))
+            if pid:
+                scores_map[pid] = scores_map.get(pid, 0.0) + WHOLE_IMG_WEIGHT * float(norm_sc)
+
+        # ── Optional text re-ranking ─────────────────────────────────────────
         ranked_ext = sorted(scores_map.items(), key=lambda x: x[1], reverse=True)
         top_pids = [pid for pid, _ in ranked_ext[:TEXT_RERANK_TOP_N]]
         if ENABLE_TEXT_RERANK and top_pids:
@@ -885,7 +970,7 @@ print(f"Segmented predictions for {len(segmented_preds)} bundles.")
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 10: Validation (Recall@15)
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:37:32.207417Z","iopub.execute_input":"2026-02-28T10:37:32.207747Z","iopub.status.idle":"2026-02-28T10:51:08.849442Z","shell.execute_reply.started":"2026-02-28T10:37:32.207719Z","shell.execute_reply":"2026-02-28T10:51:08.848894Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T12:48:24.508747Z","iopub.execute_input":"2026-02-28T12:48:24.509310Z","iopub.status.idle":"2026-02-28T13:25:38.952833Z","shell.execute_reply.started":"2026-02-28T12:48:24.509285Z","shell.execute_reply":"2026-02-28T13:25:38.952083Z"}}
 def recall_at_k(
     predictions: dict[str, list[str]],
     ground_truth: dict[str, set],
@@ -959,7 +1044,7 @@ plt.show()
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 11: Generate Submission
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:51:44.559041Z","iopub.execute_input":"2026-02-28T10:51:44.559358Z","iopub.status.idle":"2026-02-28T10:52:15.514118Z","shell.execute_reply.started":"2026-02-28T10:51:44.559332Z","shell.execute_reply":"2026-02-28T10:52:15.513478Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T13:25:54.025423Z","iopub.execute_input":"2026-02-28T13:25:54.026006Z","iopub.status.idle":"2026-02-28T13:28:49.863312Z","shell.execute_reply.started":"2026-02-28T13:25:54.025976Z","shell.execute_reply":"2026-02-28T13:28:49.862751Z"}}
 # Generate test predictions for both methods
 baseline_preds = predict_baseline(test_bundle_ids, k=TOP_K)
 
@@ -1058,7 +1143,7 @@ print(submission_df.head(20).to_string(index=False))
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 12: Text Re-ranking Demo
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:52:16.606498Z","iopub.execute_input":"2026-02-28T10:52:16.606955Z","iopub.status.idle":"2026-02-28T10:52:17.608671Z","shell.execute_reply.started":"2026-02-28T10:52:16.606921Z","shell.execute_reply":"2026-02-28T10:52:17.607946Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T13:28:54.764676Z","iopub.execute_input":"2026-02-28T13:28:54.764977Z","iopub.status.idle":"2026-02-28T13:28:55.865536Z","shell.execute_reply.started":"2026-02-28T13:28:54.764954Z","shell.execute_reply":"2026-02-28T13:28:55.864936Z"}}
 # text_rerank() is defined in Cell 9 — demo only here.
 print("Demonstrating text re-ranking …")
 
@@ -1090,7 +1175,7 @@ for bid in demo_rerank_bids:
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Summary
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T10:52:26.539479Z","iopub.execute_input":"2026-02-28T10:52:26.540177Z","iopub.status.idle":"2026-02-28T10:52:26.546297Z","shell.execute_reply.started":"2026-02-28T10:52:26.540150Z","shell.execute_reply":"2026-02-28T10:52:26.545604Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T13:28:58.801888Z","iopub.execute_input":"2026-02-28T13:28:58.802510Z","iopub.status.idle":"2026-02-28T13:28:58.809018Z","shell.execute_reply.started":"2026-02-28T13:28:58.802484Z","shell.execute_reply":"2026-02-28T13:28:58.808276Z"}}
 print("\n" + "=" * 60)
 print("HACKUDC 2026 — SOLUTION SUMMARY")
 print("=" * 60)
@@ -1099,6 +1184,10 @@ print(f"Embedding dimension      : {DIM}")
 print(f"FAISS backend            : {'GPU' if DEVICE == 'cuda' else 'CPU'}")
 print(f"Segmentation model       : SegFormer B2 (ATR 17 classes)")
 print(f"Retrieval model          : {'Marqo-FashionSigLIP' if USE_MARQO else 'FashionCLIP'} (512-dim)")
+print(f"TTA views (query)        : {TTA_N_VIEWS}")
+print(f"Adaptive routing         : segmented if crops >= {SEG_MIN_CROPS}, baseline otherwise")
+print(f"Whole-image bonus weight : {WHOLE_IMG_WEIGHT}")
+print(f"Text re-ranking          : {'enabled (alpha={TEXT_RERANK_ALPHA})' if ENABLE_TEXT_RERANK else 'disabled'}")
 print(f"Baseline Recall@{TOP_K}    : {recall_base:.4f}")
 print(f"Segmented Recall@{TOP_K}   : {recall_seg:.4f}")
 print(f"Method selected          : {method_name}")

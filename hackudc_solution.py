@@ -7,7 +7,7 @@
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 1: Setup
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T08:03:00.461499Z","iopub.execute_input":"2026-02-28T08:03:00.461877Z","iopub.status.idle":"2026-02-28T08:03:07.991665Z","shell.execute_reply.started":"2026-02-28T08:03:00.461851Z","shell.execute_reply":"2026-02-28T08:03:07.991076Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T08:51:49.892409Z","iopub.execute_input":"2026-02-28T08:51:49.893149Z","iopub.status.idle":"2026-02-28T08:51:57.418098Z","shell.execute_reply.started":"2026-02-28T08:51:49.893117Z","shell.execute_reply":"2026-02-28T08:51:57.417460Z"}}
 import subprocess, sys
 
 def _pip(*args):
@@ -28,7 +28,7 @@ except Exception:
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 2: Imports & Configuration
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T08:03:07.992818Z","iopub.execute_input":"2026-02-28T08:03:07.993583Z","iopub.status.idle":"2026-02-28T08:03:08.002008Z","shell.execute_reply.started":"2026-02-28T08:03:07.993543Z","shell.execute_reply":"2026-02-28T08:03:08.001422Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T08:51:57.419495Z","iopub.execute_input":"2026-02-28T08:51:57.419768Z","iopub.status.idle":"2026-02-28T08:51:57.429153Z","shell.execute_reply.started":"2026-02-28T08:51:57.419734Z","shell.execute_reply":"2026-02-28T08:51:57.428363Z"}}
 import os
 import gc
 import json
@@ -92,7 +92,7 @@ print("\nConfiguration loaded.")
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 3: Data Loading
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T08:03:08.002940Z","iopub.execute_input":"2026-02-28T08:03:08.003174Z","iopub.status.idle":"2026-02-28T08:03:08.271008Z","shell.execute_reply.started":"2026-02-28T08:03:08.003155Z","shell.execute_reply":"2026-02-28T08:03:08.270418Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T08:51:57.429927Z","iopub.execute_input":"2026-02-28T08:51:57.430156Z","iopub.status.idle":"2026-02-28T08:51:57.570195Z","shell.execute_reply.started":"2026-02-28T08:51:57.430138Z","shell.execute_reply":"2026-02-28T08:51:57.569568Z"}}
 bundles_df = pd.read_csv(DATA_DIR / "bundles_dataset.csv")
 products_df = pd.read_csv(DATA_DIR / "product_dataset.csv")
 train_df = pd.read_csv(DATA_DIR / "bundles_product_match_train.csv")
@@ -137,7 +137,7 @@ print(f"\nTest bundle IDs: {len(test_bundle_ids)}")
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 4: Image Download + Preview
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T08:03:08.272677Z","iopub.execute_input":"2026-02-28T08:03:08.272996Z","iopub.status.idle":"2026-02-28T08:05:56.950768Z","shell.execute_reply.started":"2026-02-28T08:03:08.272975Z","shell.execute_reply":"2026-02-28T08:05:56.950029Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T08:51:57.571599Z","iopub.execute_input":"2026-02-28T08:51:57.571828Z","iopub.status.idle":"2026-02-28T08:53:37.904549Z","shell.execute_reply.started":"2026-02-28T08:51:57.571808Z","shell.execute_reply":"2026-02-28T08:53:37.903864Z"}}
 def download_image(asset_id: str, url: str, out_dir: Path, timeout: int = DOWNLOAD_TIMEOUT) -> bool:
     """Download image if not already cached. Returns True on success."""
     out_path = out_dir / f"{asset_id}.jpg"
@@ -221,11 +221,7 @@ show_images(valid_bundle_ids[:5],   BUND_DIR, title="Bundle Sample")
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 5: FashionCLIP Loading
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T08:15:20.282277Z","iopub.execute_input":"2026-02-28T08:15:20.282574Z","iopub.status.idle":"2026-02-28T08:15:22.141462Z","shell.execute_reply.started":"2026-02-28T08:15:20.282542Z","shell.execute_reply":"2026-02-28T08:15:22.140774Z"}}
-# %% [markdown]
-# ## Cell 5: FashionCLIP Loading
-
-# %%
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T09:18:27.558230Z","iopub.execute_input":"2026-02-28T09:18:27.558509Z","iopub.status.idle":"2026-02-28T09:18:29.445012Z","shell.execute_reply.started":"2026-02-28T09:18:27.558484Z","shell.execute_reply":"2026-02-28T09:18:29.444299Z"}}
 from fashion_clip.fashion_clip import FashionCLIP  # noqa: E402
 import fashion_clip.fashion_clip as _fc_module      # noqa: E402
 
@@ -321,11 +317,10 @@ def _l2_norm(arr: np.ndarray) -> np.ndarray:
     norms = np.linalg.norm(arr, axis=1, keepdims=True).clip(min=1e-8)
     return arr / norms
 
-
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 6: Product Embeddings + FAISS Index
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T08:43:30.473910Z","iopub.execute_input":"2026-02-28T08:43:30.474403Z","iopub.status.idle":"2026-02-28T08:43:30.532625Z","shell.execute_reply.started":"2026-02-28T08:43:30.474372Z","shell.execute_reply":"2026-02-28T08:43:30.532067Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T09:18:35.650085Z","iopub.execute_input":"2026-02-28T09:18:35.650698Z","iopub.status.idle":"2026-02-28T09:18:35.741081Z","shell.execute_reply.started":"2026-02-28T09:18:35.650673Z","shell.execute_reply":"2026-02-28T09:18:35.740514Z"}}
 def _ensure_valid_sets():
     """Rebuild valid_product/bundle sets from disk if empty (survives kernel restarts)."""
     global valid_product_set, valid_product_ids, valid_bundle_set, valid_bundle_ids
@@ -396,69 +391,82 @@ elif index.ntotal < 20_000:
     print(f"  [WARN] Only {index.ntotal:,} products indexed (expected ~27K). "
           "Some downloads may have failed — results may be degraded.")
 
+
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 7: Baseline Pipeline (whole-image retrieval)
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T08:44:49.828031Z","iopub.execute_input":"2026-02-28T08:44:49.828749Z","iopub.status.idle":"2026-02-28T08:44:49.849220Z","shell.execute_reply.started":"2026-02-28T08:44:49.828695Z","shell.execute_reply":"2026-02-28T08:44:49.848438Z"}}
-def predict_baseline(bundle_ids: list[str], k: int = TOP_K, batch_size: int = 32) -> dict[str, list[str]]:
-    """
-    Embed each bundle image as a whole and query FAISS.
-    Returns {bundle_id: [product_id, ...]} sorted by score desc.
-    """
-    predictions: dict[str, list[str]] = {}
-    valid_ids = [bid for bid in bundle_ids if bid in valid_bundle_set]
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T09:18:43.344635Z","iopub.execute_input":"2026-02-28T09:18:43.345222Z","iopub.status.idle":"2026-02-28T09:18:43.433644Z","shell.execute_reply.started":"2026-02-28T09:18:43.345197Z","shell.execute_reply":"2026-02-28T09:18:43.433025Z"}}
+# Rebuild valid_product_set / valid_bundle_set from disk in case Cell 4 was
+# skipped or the kernel restarted — images already on disk are still usable.
+_prod_on_disk = {p.stem for p in PROD_DIR.glob("*.jpg")}
+_bund_on_disk = {p.stem for p in BUND_DIR.glob("*.jpg")}
+if not valid_product_set and _prod_on_disk:
+    valid_product_set = _prod_on_disk
+    valid_product_ids = list(_prod_on_disk)
+    print(f"Rebuilt valid_product_set from disk: {len(valid_product_set):,}")
+if not valid_bundle_set and _bund_on_disk:
+    valid_bundle_set = _bund_on_disk
+    valid_bundle_ids = list(_bund_on_disk)
+    print(f"Rebuilt valid_bundle_set from disk: {len(valid_bundle_set):,}")
 
-    for i in tqdm(range(0, len(valid_ids), batch_size), desc="Baseline predict"):
-        batch_ids = valid_ids[i : i + batch_size]
-        imgs: list[Image.Image] = []
-        for bid in batch_ids:
-            img = load_image(bid, BUND_DIR)
-            imgs.append(img if img is not None else Image.new("RGB", (IMG_SIZE, IMG_SIZE)))
+if EMB_FILE.exists() and IDS_FILE.exists():
+    print("Loading cached product embeddings …")
+    product_embeddings = np.load(EMB_FILE)
+    with open(IDS_FILE) as f:
+        indexed_product_ids: list[str] = json.load(f)
+    print(f"  Loaded {product_embeddings.shape} from cache.")
+else:
+    print("Computing product embeddings (first run, ~15 min on T4) …")
+    # Only embed products we actually downloaded
+    ordered_ids  = [pid for pid in valid_product_ids if pid in valid_product_set]
+    ordered_paths = [PROD_DIR / f"{pid}.jpg" for pid in ordered_ids]
+    product_embeddings = embed_images_fashionclip(ordered_paths, batch_size=EMBED_BATCH)
+    indexed_product_ids = ordered_ids
+    np.save(EMB_FILE, product_embeddings)
+    with open(IDS_FILE, "w") as f:
+        json.dump(indexed_product_ids, f)
+    print(f"  Saved embeddings: {product_embeddings.shape}")
 
-        embs = _l2_norm(_clip_encode_images_raw(imgs))
+# Reverse lookup
+idx_to_pid: dict[int, str] = {i: pid for i, pid in enumerate(indexed_product_ids)}
 
-        scores, indices = index.search(embs, k)  # (B, k)
-        for bid, sc, idx_row in zip(batch_ids, scores, indices):
-            predictions[bid] = [idx_to_pid[int(j)] for j in idx_row if int(j) in idx_to_pid]
+# Build FAISS index
+DIM = product_embeddings.shape[1]  # 512
+print(f"\nBuilding FAISS IndexFlatIP (dim={DIM}, n={len(indexed_product_ids):,}) …")
+index_cpu = faiss.IndexFlatIP(DIM)
+index_cpu.add(product_embeddings)
 
-        if DEVICE == "cuda":
-            torch.cuda.empty_cache()
+if DEVICE == "cuda":
+    try:
+        res = faiss.StandardGpuResources()
+        index = faiss.index_cpu_to_gpu(res, 0, index_cpu)
+        print("  Transferred index to GPU.")
+    except Exception as e:
+        print(f"  [WARN] GPU index failed ({e}), falling back to CPU.")
+        index = index_cpu
+else:
+    index = index_cpu
+    print("  Using CPU index.")
 
-    return predictions
+print(f"  FAISS ntotal = {index.ntotal:,}")
+print(f"  indexed_product_ids count = {len(indexed_product_ids):,}")
+print(f"  valid_product_ids count   = {len(valid_product_ids):,}")
+print(f"  valid_product_set count   = {len(valid_product_set):,}")
+if index.ntotal < 1_000:
+    raise RuntimeError(
+        f"Only {index.ntotal} products indexed — something went wrong with download or embedding. "
+        "Delete the cache files and re-run:\n"
+        f"  {EMB_FILE}\n  {IDS_FILE}"
+    )
+elif index.ntotal < 20_000:
+    print(f"  [WARN] Only {index.ntotal:,} products indexed (expected ~27K). "
+          "Some downloads may have failed — results may be degraded.")
 
-
-# Run baseline on training bundles (sample) + test bundles
-print("Running baseline on test bundles …")
-baseline_preds = predict_baseline(test_bundle_ids)
-print(f"Baseline predictions generated for {len(baseline_preds)} bundles.")
-
-# Quick visualisation: bundle + top-5 retrieved products
-def visualise_retrieval(bundle_id: str, pred_ids: list[str], n_show: int = 5):
-    fig, axes = plt.subplots(1, n_show + 1, figsize=(3 * (n_show + 1), 3))
-    bimg = load_image(bundle_id, BUND_DIR)
-    if bimg:
-        axes[0].imshow(bimg)
-    axes[0].set_title("Bundle", fontsize=9)
-    axes[0].axis("off")
-    for ax, pid in zip(axes[1:], pred_ids[:n_show]):
-        pimg = load_image(pid, PROD_DIR)
-        if pimg:
-            ax.imshow(pimg)
-        ax.set_title(pid[:12], fontsize=7)
-        ax.axis("off")
-    plt.tight_layout()
-    plt.savefig(WORK_DIR / f"retrieval_{bundle_id[:10]}.png", bbox_inches="tight", dpi=80)
-    plt.show()
-
-# Show a couple of examples
-sample_bids = [bid for bid in test_bundle_ids[:3] if bid in baseline_preds]
-for bid in sample_bids:
-    visualise_retrieval(bid, baseline_preds[bid])
 
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 8: SegFormer Segmentation
 
-# %% [code] {"jupyter":{"outputs_hidden":false}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T09:18:47.771843Z","iopub.execute_input":"2026-02-28T09:18:47.772444Z","iopub.status.idle":"2026-02-28T09:18:51.086729Z","shell.execute_reply.started":"2026-02-28T09:18:47.772420Z","shell.execute_reply":"2026-02-28T09:18:51.085933Z"}}
 from transformers import SegformerImageProcessor, SegformerForSemanticSegmentation  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
 
@@ -615,7 +623,7 @@ if demo_bid:
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 9: Improved Pipeline (per-segment retrieval)
 
-# %% [code] {"jupyter":{"outputs_hidden":false}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T09:18:54.803810Z","iopub.execute_input":"2026-02-28T09:18:54.804387Z","iopub.status.idle":"2026-02-28T09:19:45.243244Z","shell.execute_reply.started":"2026-02-28T09:18:54.804359Z","shell.execute_reply":"2026-02-28T09:19:45.242501Z"}}
 def predict_segmented(
     bundle_ids: list[str],
     k: int = TOP_K,
@@ -693,10 +701,11 @@ print("Running segmented pipeline on test bundles …")
 segmented_preds = predict_segmented(test_bundle_ids, k=TOP_K)
 print(f"Segmented predictions for {len(segmented_preds)} bundles.")
 
+
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 10: Validation (Recall@15)
 
-# %% [code] {"jupyter":{"outputs_hidden":false}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T09:30:05.415213Z","iopub.execute_input":"2026-02-28T09:30:05.415950Z","iopub.status.idle":"2026-02-28T09:37:39.399761Z","shell.execute_reply.started":"2026-02-28T09:30:05.415917Z","shell.execute_reply":"2026-02-28T09:37:39.398948Z"}}
 def recall_at_k(
     predictions: dict[str, list[str]],
     ground_truth: dict[str, set],
@@ -770,7 +779,7 @@ plt.show()
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 11: Generate Submission
 
-# %% [code] {"jupyter":{"outputs_hidden":false}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T09:37:46.404341Z","iopub.execute_input":"2026-02-28T09:37:46.404622Z","iopub.status.idle":"2026-02-28T09:37:46.443654Z","shell.execute_reply.started":"2026-02-28T09:37:46.404598Z","shell.execute_reply":"2026-02-28T09:37:46.443082Z"}}
 # Auto-select best method
 use_segmented = recall_seg >= recall_base
 method_name   = "segmented" if use_segmented else "baseline"
@@ -844,7 +853,7 @@ print(submission_df.head(20).to_string(index=False))
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Cell 12: Bonus — Text Re-ranking
 
-# %% [code] {"jupyter":{"outputs_hidden":false}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T08:53:37.962374Z","iopub.status.idle":"2026-02-28T08:53:37.962750Z"}}
 def text_rerank(
     bundle_id: str,
     candidate_pids: list[str],
@@ -917,7 +926,7 @@ for bid in demo_rerank_bids:
 # %% [markdown] {"jupyter":{"outputs_hidden":false}}
 # ## Summary
 
-# %% [code] {"jupyter":{"outputs_hidden":false}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2026-02-28T08:53:37.967021Z","iopub.status.idle":"2026-02-28T08:53:37.967309Z"}}
 print("\n" + "=" * 60)
 print("HACKUDC 2026 — SOLUTION SUMMARY")
 print("=" * 60)

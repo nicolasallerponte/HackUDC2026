@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MXNJ — Outfit Intelligence</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;1,300;1,400&family=Helvetica+Neue:wght@300;400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+
+  <!-- ── HEADER ── -->
+  <header id="site-header">
+    <div class="header-inner">
+      <button class="nav-toggle" id="navToggle" aria-label="Menu">
+        <span></span><span></span>
+      </button>
+      <a class="logo" href="#" onclick="showView('home')">MXNJ</a>
+      <nav class="header-nav">
+        <a href="#" onclick="showView('home')">OUTFITS</a>
+        <a href="#" onclick="showView('stats')">INSIGHTS</a>
+        <a href="#" onclick="showView('about')">TEAM</a>
+      </nav>
+    </div>
+  </header>
+
+  <!-- ── HERO ── -->
+  <section id="view-home">
+
+    <div class="hero">
+      <div class="hero-text">
+        <p class="hero-sub">HackUDC · Inditex Tech Challenge · 2026</p>
+        <h1 class="hero-title">Outfit<br><em>Intelligence</em></h1>
+        <p class="hero-desc">
+          Visual AI that reads an outfit and identifies every garment within it —
+          built by team MXNJ for Zara's catalogue of 27,000+ products.
+        </p>
+        <div class="hero-metric-row">
+          <div class="hero-metric">
+            <span class="metric-val" id="hero-bundles">—</span>
+            <span class="metric-label">Outfits analysed</span>
+          </div>
+          <div class="hero-metric">
+            <span class="metric-val" id="hero-products">—</span>
+            <span class="metric-label">Unique products matched</span>
+          </div>
+          <div class="hero-metric">
+            <span class="metric-val" id="hero-avg">—</span>
+            <span class="metric-label">Avg. items per outfit</span>
+          </div>
+        </div>
+        <button class="btn-primary" onclick="scrollToGrid()">Explore outfits</button>
+      </div>
+      <div class="hero-visual">
+        <div class="hero-img-wrap" id="heroImgWrap">
+          <!-- filled by JS -->
+        </div>
+      </div>
+    </div>
+
+    <!-- ── OUTFIT GRID ── -->
+    <section class="grid-section" id="gridSection">
+      <div class="section-header">
+        <h2>All Outfits</h2>
+        <span class="section-count" id="totalCount">— outfits</span>
+      </div>
+      <div class="outfit-grid" id="outfitGrid">
+        <!-- cards injected by JS -->
+      </div>
+      <div class="pagination" id="pagination"></div>
+    </section>
+
+  </section>
+
+  <!-- ── DETAIL VIEW ── -->
+  <section id="view-detail" class="hidden">
+    <div class="detail-back">
+      <button onclick="showView('home')" class="back-btn">← Back to outfits</button>
+    </div>
+    <div class="detail-layout" id="detailLayout">
+      <!-- injected by JS -->
+    </div>
+  </section>
+
+  <!-- ── STATS VIEW ── -->
+  <section id="view-stats" class="hidden">
+    <div class="stats-page">
+      <div class="stats-header">
+        <p class="hero-sub">Model Performance</p>
+        <h2 class="stats-title">Insights</h2>
+      </div>
+      <div class="stats-grid" id="statsGrid">
+        <!-- injected by JS -->
+      </div>
+    </div>
+  </section>
+
+  <!-- ── ABOUT VIEW ── -->
+  <section id="view-about" class="hidden">
+    <div class="about-page">
+      <div class="about-header">
+        <p class="hero-sub">HackUDC · Inditex Tech Challenge · 2026</p>
+        <h2 class="about-title">Team <em>MXNJ</em></h2>
+      </div>
+      <div class="team-grid">
+        <div class="team-card">
+          <div class="team-initial">M</div>
+          <p class="team-name">Miguel Planas Díaz</p>
+        </div>
+        <div class="team-card">
+          <div class="team-initial">X</div>
+          <p class="team-name">Xoel García Maestu</p>
+        </div>
+        <div class="team-card">
+          <div class="team-initial">N</div>
+          <p class="team-name">Nicolás Aller Ponte</p>
+        </div>
+        <div class="team-card">
+          <div class="team-initial">J</div>
+          <p class="team-name">Jacobo Núñez Álvarez</p>
+        </div>
+      </div>
+      <div class="about-pipeline">
+        <h3>Pipeline</h3>
+        <div class="pipeline-steps">
+          <div class="pipeline-step">
+            <span class="step-num">01</span>
+            <div>
+              <strong>Multimodal Embeddings</strong>
+              <p>SigLIP SO400M-384px — image encoder fused with text descriptions (0.8 / 0.2)</p>
+            </div>
+          </div>
+          <div class="pipeline-step">
+            <span class="step-num">02</span>
+            <div>
+              <strong>Anatomical Segmentation</strong>
+              <p>YOLOv8-seg crops each outfit into HEAD · TORSO · LEGS · FEET zones</p>
+            </div>
+          </div>
+          <div class="pipeline-step">
+            <span class="step-num">03</span>
+            <div>
+              <strong>DINOv2 Ensemble</strong>
+              <p>Meta's ViT-L/14 adds texture & material signal — concatenated to SigLIP (2176d)</p>
+            </div>
+          </div>
+          <div class="pipeline-step">
+            <span class="step-num">04</span>
+            <div>
+              <strong>Hard Negative Mining</strong>
+              <p>InfoNCE fine-tuning with semantic masking of ambiguous negatives</p>
+            </div>
+          </div>
+          <div class="pipeline-step">
+            <span class="step-num">05</span>
+            <div>
+              <strong>B2B Retrieval + Popularity</strong>
+              <p>Bundle-to-bundle similarity + section popularity prior for final scoring</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

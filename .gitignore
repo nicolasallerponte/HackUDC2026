@@ -7,3 +7,4 @@ cache
 Pipfile
 Pipfile.lock
 checkpoints/
+**/__pycache__/

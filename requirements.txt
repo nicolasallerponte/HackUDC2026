@@ -1,0 +1,54 @@
+# --- Web / Demo ---
+fastapi==0.134.0
+uvicorn[standard]==0.41.0
+jinja2==3.1.6
+python-multipart==0.0.22
+aiofiles==25.1.0
+
+# --- Data & Visión ---
+pandas==3.0.1
+numpy==2.4.2
+pillow==12.1.1
+opencv-python-headless==4.13.0.92
+requests==2.32.5
+tqdm==4.67.3
+scikit-learn==1.8.0
+scipy==1.17.1
+
+# --- Deep Learning ---
+# Instala PyTorch antes con el índice CUDA:
+#   pip install torch==2.10.0 torchvision==0.25.0 --index-url https://download.pytorch.org/whl/cu118
+torch==2.10.0
+torchvision==0.25.0
+
+# --- Transformers / HuggingFace ---
+transformers==5.2.0
+huggingface-hub==1.5.0
+tokenizers==0.22.2
+safetensors==0.7.0
+accelerate==1.12.0
+peft==0.18.1
+
+# --- Retrieval ---
+# faiss-gpu no tiene wheel para Python 3.12; faiss-cpu es suficiente
+# para búsqueda sobre 27k productos (la GPU se usa en los embeddings PyTorch)
+faiss-cpu==1.13.2
+
+# --- Pipeline del notebook ---
+ultralytics>=8.3.0
+timm>=1.0.0
+open-clip-torch>=2.26.1
+aiohttp>=3.10.0
+nest-asyncio>=1.6.0
+
+# --- Augmentaciones ---
+albumentations==2.0.8
+
+# --- Utilidades ---
+pydantic==2.12.5
+pyyaml==6.0.3
+packaging==26.0
+regex==2026.2.28
+psutil==7.2.2
+typing-extensions==4.15.0
+six==1.17.0

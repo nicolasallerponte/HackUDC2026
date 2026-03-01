@@ -3,3 +3,7 @@ data/
 CLAUDE.md
 *cesga*
 xoel/
+cache
+Pipfile
+Pipfile.lock
+checkpoints/

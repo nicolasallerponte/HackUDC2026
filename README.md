@@ -7,8 +7,7 @@
 > **Given a fashion photograph, identify every garment being worn and return the matching product references from a catalogue.** Built entirely on open-source models — zero closed-source APIs.
 
 **HackUDC 2026 · INDITEXTECH Challenge · 69.66% Recall@15**  
-Team: [Xoel García](https://github.com/xoel-maesty) · Jacobo Núñez · **[Nicolás Aller](https://github.com/nicolasallerponte)** · [Miguel Planas](https://github.com/miguelplanas)
----
+Team: [Xoel García](https://github.com/xoel-maestu) · Jacobo Núñez · **[Nicolás Aller](https://github.com/nicolasallerponte)** · [Miguel Planas](https://github.com/miguelplanas)---
 
 ## Table of Contents
 
